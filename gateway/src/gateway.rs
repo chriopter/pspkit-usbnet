@@ -224,9 +224,11 @@ struct Flow {
     targets: Vec<SocketAddr>,
     target: usize,
     dns: bool,
-    /// Datagrams from the PSP and to it, for the log.
+    /// Datagrams from the PSP and to it, and who they went to and came
+    /// from (the first few), for the log.
     sent: u64,
     got: u64,
+    seen: Vec<SocketAddrV4>,
     /// When the PSP last sent through it. What arrives does not count, or a
     /// stranger could keep the port open.
     last: Instant,

@@ -127,7 +127,7 @@ impl Gateway {
                         logln!("dns: {client} asks for {}", packet::dns_name(payload));
                     } else {
                         let port = sock.local_addr().map_or(0, |a| a.port());
-                        logln!("udp: {client} -> {dst}, from port {port} of this computer");
+                        logln!("udp: {client} opens port {port} of this computer");
                     }
                     let flow = Flow {
                         sock,
@@ -137,6 +137,7 @@ impl Gateway {
                         dns,
                         sent: 0,
                         got: 0,
+                        seen: Vec::new(),
                         last: now,
                         waiting_since: None,
                     };
@@ -166,6 +167,10 @@ impl Gateway {
             }
             flow.sock.send(payload)
         } else {
+            if !flow.seen.contains(&dst) && flow.seen.len() < 64 {
+                flow.seen.push(dst);
+                logln!("udp: {client} -> {dst}");
+            }
             flow.sock.send_to(payload, to)
         };
         match sent {
@@ -228,8 +233,9 @@ impl Gateway {
                         if flow.dns {
                             self.stats.dns_answers += 1;
                         }
-                        if flow.got == 0 && !flow.dns {
-                            logln!("udp: {client} <- {from}: the first answer");
+                        if !flow.dns && !flow.seen.contains(&from) && flow.seen.len() < 64 {
+                            flow.seen.push(from);
+                            logln!("udp: {client} <- {from}, not sent to before");
                         }
                         flow.got += 1;
                         self.stats.udp_in += 1;
