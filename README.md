@@ -71,10 +71,12 @@ Network Settings → Infrastructure Mode → New Connection → Scan → "Hi-Spe
 <details>
 <summary><b>Tested</b></summary>
 
-- PSP-1000, 6.60 + ARK
-- 80 of 80 downloads intact, 210 of 210 connects
-- PSPDX from the XMB: catalog and install
-- Untested: a real PSP Street, games, Windows, macOS
+- PSP-1000, 6.60 + ARK, Linux gateway
+- From the XMB: connection made from the scan, connection test, a DNS server set by hand
+- SOCOM: Fireteam Bravo 2 online (PSRewired): a round played
+- PSPDX: catalog and installs
+- Beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
+- Untested: a real PSP Street, Windows, macOS
 
 </details>
 
