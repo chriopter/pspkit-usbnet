@@ -10,12 +10,13 @@
  * timeout. Frames to send are taken from the handle's queue (dequeue),
  * received ones are handed up as mbufs (enqueue).
  *
- * This module takes the callbacks' place. A connection whose profile is
- * the USB one is answered here and its frames go to usbnet.c; the radio is
- * never switched on. Any other connection reaches wlan.prx as before.
+ * This module takes the callbacks' place. A scan finds one more access
+ * point, "Hi-Speed USB", and the user makes a connection from it like from
+ * any other. A connection with that SSID is answered here and its frames
+ * go to usbnet.c; the radio is never switched on. Any other connection
+ * reaches wlan.prx as before.
  *
- *  - The profile exists only in the answers of the three functions the
- *    firmware reads profiles with; nothing is written to the registry.
+ *  - Nothing is made up in the registry: the connection is a saved one.
  *  - With the WLAN switch off, and on a PSP-E1000 (no WLAN hardware),
  *    wlan.prx reports "switch off" and refuses to attach. Five of its
  *    functions are answered here, and the "wlan" handle is then this
@@ -28,7 +29,6 @@
 
 #include "usbnet.h"
 
-#define USB_NAME "Hi-Speed USB" /* as the connection dialog lists it */
 #define USB_SSID "Hi-Speed USB" /* as a scan lists it */
 
 static const u8 gateway_mac[6] = { 0x02, 0x50, 0x43, 0x00, 0x00, 0x01 }; /* the PC's side */
@@ -521,132 +521,25 @@ static int on_wlan_detach(void)
     return 0;
 }
 
-/* ---- the profile ---- */
+/* ---- which connection is for the cable ---- */
 
-static int (*check_param)(int id), (*get_param)(int id, int param, void *data);
-static int (*get_param_internal)(int id, int param, void *data);
-
-/* Its number is the highest free one: the XMB gives a new connection the
- * lowest, so the two only meet when all ten are taken. Looked at again
- * whenever the number turns out to hold a real profile. 0: none free. */
-static int usb_profile(void)
-{
-    static int id;
-
-    if (!id || check_param(id) == 0)
-        for (id = 10; id >= 1 && check_param(id) == 0; id--)
-            ;
-    return id;
-}
-
-/* The XMB edits and tests a connection through a working copy in another
- * slot (0): while a slot holds a copy of the USB profile it is that one. */
-static int usb_copy = -1;
-
-static int is_usb_profile(int id)
-{
-    return id == usb_copy || (id >= 1 && id == usb_profile());
-}
-
-static int on_check_param(int id)
-{
-    trace('c', id, is_usb_profile(id), 0);
-    return is_usb_profile(id) ? 0 : check_param(id);
-}
-
-/* A profile the user made from the scan's entry: Wi-Fi by its looks, but
- * its SSID is the cable's. */
-static int has_usb_ssid(int id)
-{
-    char ssid[0x80];
-    int k1 = pspSdkSetK1(0), r = get_param(id, 1, ssid); /* a kernel buffer in a caller's system call */
-
-    pspSdkSetK1(k1);
-    return r >= 0 && !strcmp(ssid, USB_SSID);
-}
-
-/* The profile, as the firmware would read a freshly created one from the
- * registry: DHCP, automatic DNS, no proxy, no security. Its 32 parameters
- * are strings, numbers (4 bytes) or keys (3: 13 bytes, 0x16: 64). "Version"
- * 5 and "device" 1 (WLAN) matter: with an older version apctl skips half
- * of the profile and keeps what the last one left there, which in the XMB
- * is the Wi-Fi profile read before (error 0x80410A88 with WPA). */
-static int profile_param(int (*real)(int, int, void *), int id, int param, void *data)
-{
-    static const char kind[] = "ssibisssissssisiiiissibiissisiss";
-    const char *text = param == 0 ? USB_NAME : param == 1 ? USB_SSID : param == 6 ? "255.255.255.0"
-                     : param == 5 || param == 7 || param == 9 || param == 10 ? "0.0.0.0" : "";
-    int number = param == 0x10 ? 5 : param == 0x11 ? 1 : param == 0x0f ? 8080 : 0;
-
-    trace(real == get_param ? 'g' : 'G', id, param, is_usb_profile(id));
-    /* apctl reads the whole profile before it connects, this one only it
-     * and only through the public function; lists read names and SSIDs. */
-    if (param == 8 && real == get_param)
-        usb_next = is_usb_profile(id) || has_usb_ssid(id);
-    if (!is_usb_profile(id) || param < 0 || param > 31 || !data)
-        return real(id, param, data);
-    if (kind[param] == 's')
-        strcpy(data, text);
-    else if (kind[param] == 'i')
-        memcpy(data, &number, 4);
-    else
-        memset(data, 0, param == 3 ? 13 : 64);
-    return 0;
-}
+/* The one whose SSID is the cable's: a saved connection like any other,
+ * made from the scan's entry. apctl reads the whole profile before it
+ * connects, parameter 8 only it and only through this function; lists
+ * read names and SSIDs. */
+static int (*get_param)(int id, int param, void *data);
 
 static int on_get_param(int id, int param, void *data)
 {
-    return profile_param(get_param, id, param, data);
-}
+    trace('g', id, param, 0);
+    if (param == 8) {
+        char ssid[0x80];
+        int k1 = pspSdkSetK1(0); /* a kernel buffer in the caller's system call */
 
-/* The same with the hidden parameters 25..31 (keys); apctl and the
- * connection dialog read through this one. */
-static int on_get_param_internal(int id, int param, void *data)
-{
-    return profile_param(get_param_internal, id, param, data);
-}
-
-/* The functions that write profiles (their real meaning; PSPLibDoc has
- * create and delete swapped). The USB profile is not in the registry: what
- * is written to it is dropped, and nothing can create or delete it. */
-static int (*copy_param)(int from, int to), (*create_param)(int id), (*delete_param)(int id);
-static int (*set_param)(int param, const void *value), (*set_param_internal)(int param, const void *value);
-
-static int on_copy_param(int from, int to)
-{
-    if (is_usb_profile(from)) {
-        if (!is_usb_profile(to))
-            usb_copy = to;
-        return 0;
+        usb_next = get_param(id, 1, ssid) >= 0 && !strcmp(ssid, USB_SSID);
+        pspSdkSetK1(k1);
     }
-    if (to == usb_copy)
-        usb_copy = -1; /* the slot is another profile's copy now */
-    return is_usb_profile(to) ? 0 : copy_param(from, to);
-}
-
-static int on_create_param(int id)
-{
-    if (id == usb_copy)
-        usb_copy = -1;
-    return is_usb_profile(id) ? 0 : create_param(id);
-}
-
-static int on_delete_param(int id)
-{
-    if (id == usb_copy)
-        usb_copy = -1;
-    return is_usb_profile(id) ? 0 : delete_param(id);
-}
-
-/* Both write to slot 0. */
-static int on_set_param(int param, const void *value)
-{
-    return usb_copy == 0 ? 0 : set_param(param, value);
-}
-
-static int on_set_param_internal(int param, const void *value)
-{
-    return usb_copy == 0 ? 0 : set_param_internal(param, value);
+    return get_param(id, param, data);
 }
 
 /* ---- putting it all in, and taking it out ---- */
@@ -658,16 +551,7 @@ static struct fixed {
     void *to, **original;
     struct hook hook;
 } fixed[] = {
-    { "sceUtility_Driver", "sceUtility", 0x5EEE6548, on_check_param, (void **)&check_param },
     { "sceUtility_Driver", "sceUtility", 0x434D4B3A, on_get_param, (void **)&get_param },
-    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x67C2105B, on_get_param_internal,
-      (void **)&get_param_internal },
-    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x4CB183A4, on_copy_param, (void **)&copy_param },
-    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x6B1BC62C, on_create_param, (void **)&create_param },
-    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x61D0686E, on_delete_param, (void **)&delete_param },
-    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x5D63AA06, on_set_param, (void **)&set_param },
-    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x239F260D, on_set_param_internal,
-      (void **)&set_param_internal },
     { "sceWlan_Driver", "sceWlanDrv", 0xD7763699, on_switch, NULL },    /* sceWlanGetSwitchState */
     { "sceWlan_Driver", "sceWlanDrv", 0x93440B11, on_switch, NULL },    /* sceWlanDevIsPowerOn */
     { "sceWlan_Driver", "sceWlanDrv", 0x0C622081, on_ether, (void **)&wlan_ether },
@@ -724,23 +608,22 @@ static int on_module_start(SceModule *module)
     return next_start_handler ? next_start_handler(module) : 0;
 }
 
-/* Loaded twice (as a plugin, and again by an application) each copy would
- * add a profile: the second sees the first one's jump at the head of
- * sceUtilityCheckNetParam and does not stay. */
+/* Loaded twice (as a plugin, and again by an application): the second
+ * sees the first one's jump at the head of sceUtilityGetNetParam and does
+ * not stay. */
 int net_present(void)
 {
-    u32 check = fixed_addr(&fixed[0]);
+    u32 get = fixed_addr(&fixed[0]);
 
-    return check && (*(u32 *)check >> 26) == 2;
+    return get && (*(u32 *)get >> 26) == 2;
 }
 
 int net_start(void)
 {
     int i;
 
-    for (i = 0; i < 3; i++)
-        if (!fixed_addr(&fixed[i]))
-            return -1; /* another firmware: nothing to hook, nothing hooked */
+    if (!fixed_addr(&fixed[0]))
+        return -1; /* another firmware: nothing to hook, nothing hooked */
     tx_event = sceKernelCreateEventFlag("usbnet_tx", 0, 0, NULL);
     tx_thid = sceKernelCreateThread("usbnet_tx", tx_thread, 18, 0x4000, 0, NULL);
     if (tx_event < 0 || tx_thid < 0) {
