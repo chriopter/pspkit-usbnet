@@ -14,17 +14,23 @@
 
 ## 🚀 Get started
 
-**1. PSP:** put the plugin into `ms0:/seplugins/` and enable it
+**1. PSP:** put [`usbnet.prx`](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/usbnet.prx) into `ms0:/seplugins/` and enable it
 
+**2. PC:** run the gateway
+
+Linux
 ```sh
-curl -LO https://github.com/chriopter/pspkit-usbnet/releases/latest/download/usbnet.prx
+curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64 && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
 ```
 
-**2. PC:** run the gateway (also: `-linux-aarch64`, `-macos`, `-windows-x86_64.exe`)
-
+macOS
 ```sh
-curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64
-chmod +x pspkit-usbnetd && ./pspkit-usbnetd
+curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-macos && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
+```
+
+Windows
+```sh
+curl.exe -Lo pspkit-usbnetd.exe https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-windows-x86_64.exe && pspkit-usbnetd.exe
 ```
 
 **3. PSP:** connect with "Hi-Speed USB"
