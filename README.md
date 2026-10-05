@@ -10,7 +10,7 @@
 
 | PSP | Gateway for Linux, macOS and Windows |
 |---|---|
-| <img src="assets/hi-speed-usb.png" width="400" alt="The PSP's connection list with Hi-Speed USB"> | <img src="assets/pc-app.png" width="400" alt="The gateway with a PSP connected"> |
+| <img src="assets/hi-speed-usb.png" width="400" alt="The PSP's connection list with Hi-Speed USB"> | <img src="assets/gateway.png" width="400" alt="The gateway with a PSP connected"> |
 
 ## 🚀 Get started
 
