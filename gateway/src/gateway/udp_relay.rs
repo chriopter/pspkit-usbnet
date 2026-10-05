@@ -108,8 +108,13 @@ impl Gateway {
                 Some(t) if t.is_ipv6() => (Ipv6Addr::UNSPECIFIED, 0).into(),
                 _ => (Ipv4Addr::UNSPECIFIED, 0).into(),
             };
+            // The PSP's own port number if it is free here, as home routers
+            // keep it: games tell their server the port they send from and
+            // are answered there, not at whatever port the datagram came from.
+            let same_port = SocketAddr::from((Ipv4Addr::UNSPECIFIED, client.port()));
             let token = self.new_token(Owner::Udp(key));
-            let made = UdpSocket::bind(bind).and_then(|mut sock| {
+            let bound = if dns { UdpSocket::bind(bind) } else { UdpSocket::bind(same_port).or_else(|_| UdpSocket::bind(bind)) };
+            let made = bound.and_then(|mut sock| {
                 if dns {
                     sock.connect(targets[0])?;
                 }
@@ -121,7 +126,8 @@ impl Gateway {
                     if dns {
                         logln!("dns: {client} asks for {}", packet::dns_name(payload));
                     } else {
-                        logln!("udp: {client} -> {dst}");
+                        let port = sock.local_addr().map_or(0, |a| a.port());
+                        logln!("udp: {client} -> {dst}, from port {port} of this computer");
                     }
                     let flow = Flow {
                         sock,
@@ -129,6 +135,8 @@ impl Gateway {
                         targets,
                         target: 0,
                         dns,
+                        sent: 0,
+                        got: 0,
                         last: now,
                         waiting_since: None,
                     };
@@ -161,7 +169,10 @@ impl Gateway {
             flow.sock.send_to(payload, to)
         };
         match sent {
-            Ok(_) => self.stats.udp_out += 1,
+            Ok(_) => {
+                flow.sent += 1;
+                self.stats.udp_out += 1;
+            }
             Err(e) => {
                 if self.cfg.verbose {
                     logln!("udp: {client} -> {dst}: {e}");
@@ -174,6 +185,9 @@ impl Gateway {
     pub(super) fn remove_flow(&mut self, key: &ConnKey) {
         if let Some(flow) = self.flows.remove(key) {
             self.tokens.remove(&flow.token);
+            if !flow.dns {
+                logln!("udp: {} closed: {} datagrams out, {} in", key.0, flow.sent, flow.got);
+            }
         }
     }
 
@@ -214,6 +228,10 @@ impl Gateway {
                         if flow.dns {
                             self.stats.dns_answers += 1;
                         }
+                        if flow.got == 0 && !flow.dns {
+                            logln!("udp: {client} <- {from}: the first answer");
+                        }
+                        flow.got += 1;
                         self.stats.udp_in += 1;
                         frames.push(packet::build_udp(
                             &mac,
