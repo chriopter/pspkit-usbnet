@@ -117,10 +117,8 @@ impl Screen {
         match event {
             Event::Waiting => self.set(PSP, "PSP", Mark::Pending, WAITING),
             Event::NoAccess => self.set(PSP, "PSP", Mark::Pending, "found, but no access to USB (try sudo)"),
-            Event::Found => {
-                self.set(PSP, "PSP", Mark::Done, "found");
-                self.set(CONNECTION, "Connection", Mark::Pending, "handing out an address");
-            }
+            // Not a step done yet: the PSP may leave again before it has an address.
+            Event::Found => self.set(PSP, "PSP", Mark::Pending, "found, handing out an address"),
             Event::Lost => {
                 // A traffic line stays as the total; an unfinished step goes.
                 if self.open && self.traffic.is_some() && !log::shown() {
@@ -130,6 +128,7 @@ impl Screen {
                 self.set(PSP, "PSP", Mark::Pending, WAITING);
             }
             Event::Connected(ip) if !self.connected() => {
+                self.set(PSP, "PSP", Mark::Done, "found");
                 self.set(CONNECTION, "Connected", Mark::Done, &ip.to_string());
             }
             Event::Connected(_) => {}
