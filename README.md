@@ -8,13 +8,9 @@
 - 🛠️ For developers: runs **beside PSPLink** on the same cable
 - ✅ Works on the **PSP Street** (E1000)
 
-**PSP**
-
-<img src="assets/hi-speed-usb.png" width="480" alt="The PSP's connection list with Hi-Speed USB">
-
-**Gateway** for Linux, macOS and Windows
-
-<img src="assets/pc-app.png" width="480" alt="The gateway with a PSP connected">
+| PSP | Gateway for Linux, macOS and Windows |
+|---|---|
+| <img src="assets/hi-speed-usb.png" width="400" alt="The PSP's connection list with Hi-Speed USB"> | <img src="assets/pc-app.png" width="400" alt="The gateway with a PSP connected"> |
 
 ## 🚀 Get started
 
