@@ -33,7 +33,11 @@ Windows
 curl.exe -Lo pspkit-usbnetd.exe https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-windows-x86_64.exe && pspkit-usbnetd.exe
 ```
 
-**3. PSP:** connect with "Hi-Speed USB"
+**3. PSP, once:** create the connection
+
+Network Settings → Infrastructure Mode → New Connection → Scan → "Hi-Speed USB" → Security: None → save
+
+**4. PSP:** connect with "Hi-Speed USB", like with Wi-Fi
 
 ## ⚙️ How it works
 
@@ -54,8 +58,8 @@ curl.exe -Lo pspkit-usbnetd.exe https://github.com/chriopter/pspkit-usbnet/relea
 - Linux: run with `sudo`, or add a udev rule for `054c:01c9`
 - Windows: install the WinUSB driver once ([Zadig](https://zadig.akeo.ie))
 - The PC is a gateway with NAT, like a home router
-- DNS is the PC's; `--dns IP` picks another server
-- Nothing is saved on the PSP
+- DNS is the PC's; `--dns IP` picks another server, or set one in the connection on the PSP
+- The connection is an ordinary saved one: edit or delete it like any other
 - USB is only taken while connected
 - Hold START at power-on to start without plugins
 - ARK plugin line: `always, ms0:/seplugins/usbnet.prx, on`
