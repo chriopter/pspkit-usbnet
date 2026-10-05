@@ -7,10 +7,13 @@ use pspkit_usbnetd::ui;
 use pspkit_usbnetd::packet::{self, BROADCAST_MAC, ETH_HDR, Mac, mac_str};
 use pspkit_usbnetd::usb::{OpenError, UsbConn, UsbLink};
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Bound on 127.0.0.1 by the one gateway that runs.
+const ONLY_ONE_PORT: u16 = 10770;
 
 const HELP: &str = "\
 pspkit-usbnetd - the PC side of Ethernet over the PSP's USB cable
@@ -40,8 +43,8 @@ Options:
 
 Exit status:
   0   --ping: every echo was answered (also --help, --version)
-  1   --ping: no ARP answer, or an echo went unanswered; or the gateway
-      stopped on an internal error
+  1   another pspkit-usbnetd is already running; the gateway stopped on an
+      internal error; --ping: no ARP answer, or an echo went unanswered
   2   wrong command line
   3   --ping: no PSP on USB, no usbnet interface, or it cannot be claimed
   The gateway itself never exits on its own; it ends by signal (SIGINT,
@@ -81,6 +84,15 @@ fn main() -> ExitCode {
     }
 
     cfg.verbose = verbose > 1;
+    // One gateway per computer: two would take the PSP from each other. The
+    // mark is a UDP port on this computer, held as long as this one runs.
+    let _only_one = match UdpSocket::bind((Ipv4Addr::LOCALHOST, ONLY_ONE_PORT)) {
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            eprintln!("pspkit-usbnetd: another pspkit-usbnetd is already running on this computer; end that one first");
+            return ExitCode::from(1);
+        }
+        other => other.ok(),
+    };
     if ping {
         return ping_test(&cfg);
     }
