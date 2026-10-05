@@ -4,7 +4,7 @@
  *
  *   ldstart host0:/netup.prx <seconds to wait> <profile name or SSID> <ip> <port> <path> [flags]
  *
- * Flags: k load ms0:/seplugins/usbnet.prx itself, r three more rounds of
+ * Flags: s scan first and list what is found, k load ms0:/seplugins/usbnet.prx itself, r three more rounds of
  * disconnect, connect, download, R 30 rounds of disconnect and connect,
  * w write the download to ms0:, b 64 KiB receive buffer, P 512 KiB packet
  * pool, c 333 MHz, n no checksum, m Memory Stick speed alone.
@@ -153,6 +153,18 @@ static void msbench(void)
     sceIoRemove("ms0:/usbnet-test.bin");
 }
 
+int sceNetApctlScanUser(void);
+int sceNetApctlGetBSSDescIDListUser(int *size, void *list);
+int sceNetApctlGetBSSDescEntryUser(int id, int code, void *data);
+
+static int same(const char *arg, const char *text)
+{
+    for (; *arg && *text; arg++, text++)
+        if (*arg != *text && !(*arg == '_' && *text == ' '))
+            return 0;
+    return *arg == *text;
+}
+
 int main(int argc, char *argv[])
 {
     int wait = argc > 1 ? atoi(argv[1]) : 15, r, i, state = -1, last = -2, profile = 1;
@@ -194,11 +206,30 @@ int main(int argc, char *argv[])
         sceUtilityGetNetParam(i, PSP_NETPARAM_NAME, &name);
         sceUtilityGetNetParam(i, PSP_NETPARAM_SSID, &ssid);
         say("netup: profile %d \"%s\" ssid \"%s\"\n", i, name.asString, ssid.asString);
-        /* by name or by SSID: a name with spaces does not survive pspsh's arguments */
-        if (argc > 2 && (!strcmp(argv[2], name.asString) || !strcmp(argv[2], ssid.asString)))
+        /* by name or by SSID; a space is written _ (pspsh splits arguments at spaces) */
+        if (argc > 2 && (same(argv[2], name.asString) || same(argv[2], ssid.asString)))
             profile = i;
     }
     sceNetApctlAddHandler(on_event, NULL);
+    if (argc > 6 && strchr(argv[6], 's')) { /* what a scan for everything finds */
+        struct { void *next; int id; } list[20];
+        int size = sizeof list, n;
+
+        r = sceNetApctlScanUser();
+        say("netup: scan %08x\n", r);
+        sceKernelDelayThread(8 * 1000 * 1000);
+        memset(list, 0, sizeof list);
+        r = sceNetApctlGetBSSDescIDListUser(&size, list);
+        say("netup: scan list %08x, %d bytes\n", r, size);
+        for (n = 0; r >= 0 && n < size / 8 && n < 20; n++) {
+            char ssid[40] = "";
+            int signal = 0;
+
+            sceNetApctlGetBSSDescEntryUser(list[n].id, 1, ssid);
+            sceNetApctlGetBSSDescEntryUser(list[n].id, 4, &signal);
+            say("netup: found %d \"%s\" signal %d\n", list[n].id, ssid, signal & 0xff);
+        }
+    }
     r = sceNetApctlConnect(profile);
     say("netup: sceNetApctlConnect(%d) %08x\n", profile, r);
     for (i = 0; i < 300 && !(state == 4 && argc > 5); i++) {

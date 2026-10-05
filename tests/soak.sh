@@ -13,7 +13,7 @@ for n in $(seq $1); do
   for i in $(seq 40); do up && break; sleep 1; done
   rm -f $H/netup.log
   [ -n "$PRE" ] && { timeout 15 $P -e "modstun @usbnet" >/dev/null 2>&1; sleep 4; for i in 1 2 3 4 5; do up && break; sleep 2; done; timeout 20 $P -e "ldstart host0:/usbnet.prx $PRE" >/dev/null; sleep 2; }
-  timeout 15 $P -e "ldstart host0:/netup.prx 2 PSP-USB 10.77.0.1 8975 /10m.bin $F" >/dev/null
+  timeout 15 $P -e "ldstart host0:/netup.prx 2 Hi-Speed_USB 10.77.0.1 8975 /10m.bin $F" >/dev/null
   for i in $(seq 120); do grep -qs 'netup: finished' $H/netup.log && break; sleep 1; done
   ok=$(grep -c "adler32 $want" $H/netup.log 2>/dev/null)
   [ "$ok" = 4 ] || cp $H/netup.log $B/fail-$n.log 2>/dev/null

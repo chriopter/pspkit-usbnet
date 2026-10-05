@@ -29,7 +29,7 @@
 #include "usbnet.h"
 
 #define USB_NAME "Hi-Speed USB" /* as the connection dialog lists it */
-#define USB_SSID "PSP-USB"
+#define USB_SSID "Hi-Speed USB" /* as a scan lists it */
 
 static const u8 gateway_mac[6] = { 0x02, 0x50, 0x43, 0x00, 0x00, 0x01 }; /* the PC's side */
 static const u8 own_mac[6] = { 0x02, 0x50, 0x53, 0x50, 0x00, 0x01 };     /* without a radio */
@@ -129,6 +129,7 @@ static int trace_thread(SceSize args, void *argp)
  * A line "E n nid address" names slot n; "n a b result" is a call. */
 #define EXTRAS 16
 static struct hook extra_hook[EXTRAS];
+static SceUID trace_thid;
 static int (*extra_real[EXTRAS])(u32, u32, u32, u32);
 #define EXTRA(n) static int on_extra##n(u32 a, u32 b, u32 c, u32 d) \
     { int r = extra_real[n](a, b, c, d); trace('A' + n, a, b, r); return r; }
@@ -167,11 +168,23 @@ static void trace_start(void)
             n++;
         }
     }
-    sceKernelStartThread(sceKernelCreateThread("usbnet_trace", trace_thread, 30, 0x4000, 0, NULL), 0, NULL);
+    trace_thid = sceKernelCreateThread("usbnet_trace", trace_thread, 30, 0x4000, 0, NULL);
+    sceKernelStartThread(trace_thid, 0, NULL);
+}
+
+static void trace_stop(void)
+{
+    int i;
+
+    for (i = 0; i < EXTRAS; i++)
+        if (extra_hook[i].addr)
+            hook_remove(&extra_hook[i], extra_hook[i].addr);
+    sceKernelTerminateDeleteThread(trace_thid);
 }
 #else
 #define trace(what, a, b, c) ((void)0)
 #define trace_start() ((void)0)
+#define trace_stop() ((void)0)
 #endif
 
 /* ---- ifhandle.prx: loaded by whoever starts networking, gone with it ---- */
@@ -207,7 +220,8 @@ static u32 *handle;           /* the attached handle, or NULL */
 static callback radio[6];     /* wlan.prx's callbacks, while the handle is its own */
 static u32 own_handle[11];
 static int own;               /* the handle is own_handle: no radio behind it */
-static volatile int usb_next; /* the profile read last is the USB one: what starts now runs over the cable */
+static volatile int usb_next; /* apctl has just read the USB profile: the connection it starts runs over the cable */
+static volatile int over_usb; /* the interface is up over the cable, not the radio */
 static volatile int cable;    /* a connection over the cable is up */
 static u8 joined[0x5c];       /* the scan entry apctl asked to join, from the BSSID on */
 int net_no_radio;             /* option "nowlan": as if wlan.prx had refused, for tests */
@@ -236,33 +250,60 @@ static void scan_entry(u8 *e)
     e[76] = 100;                             /* signal */
 }
 
-static int scans_for_usb(const u32 *ifr)
-{
-    const u8 *in = IFR_IN(ifr);
+/* A scan for everything (the XMB's "Scan") finds the cable too: wlan.prx
+ * gets the buffer from its second entry on, and when it reports the scan
+ * done (on its own thread, later) ours goes in front. One driver call is
+ * under way at a time, pspnet sees to that. */
+static struct { u32 *ifr; u8 *out; } scan;
+static struct hook signal_hook;
 
-    return in && IFR_OUT(ifr) && IFR_LEN(ifr) >= 96 && in[0x18] == sizeof USB_SSID - 1 &&
-           !memcmp(in + 0x1c, USB_SSID, sizeof USB_SSID - 1);
+static int on_signal(u32 *h, int kind, int result) /* interrupts may be off: memory only */
+{
+    u32 *ifr = scan.ifr;
+
+    if (ifr && h == handle) {
+        u32 found = result == 0 ? IFR_LEN(ifr) : 0;
+
+        scan.ifr = NULL;
+        scan_entry(scan.out);
+        *(u32 *)scan.out = found ? (u32)(scan.out + 96) : 0;
+        IFR_LEN(ifr) = found + 96;
+        result = 0;
+    }
+    return ifh.signal(h, kind, result);
 }
 
 static int on_ioctl(u32 *h, u32 cmd, u32 a2, u32 a3)
 {
     u32 *ifr = (u32 *)a2;
+    u8 *in = ifr ? IFR_IN(ifr) : NULL, *out = ifr ? IFR_OUT(ifr) : NULL;
 
-    trace('i', cmd, usb_next, own);
-    if (cmd == 0x34 && ifr) {
-        cable = scans_for_usb(ifr);
-        if (cable)
-            scan_entry(IFR_OUT(ifr));
-        if (cable || own) /* without a radio nothing else is found */
-            IFR_LEN(ifr) = cable ? 96 : 0;
+    trace('i', cmd, over_usb, own);
+    if (cmd == 0x34 && in && out && IFR_LEN(ifr) >= 96) {
+        int everything = in[0x18] == 0;
+
+        cable = in[0x18] == sizeof USB_SSID - 1 && !memcmp(in + 0x1c, USB_SSID, sizeof USB_SSID - 1);
+        if (cable || (own && everything)) {
+            scan_entry(out);
+            IFR_LEN(ifr) = 96;
+        } else if (own) {
+            IFR_LEN(ifr) = 0; /* without a radio nothing else is found */
+        } else if (everything && signal_hook.addr && IFR_LEN(ifr) >= 2 * 96) {
+            u32 rest[2] = { (u32)in, (u32)(out + 96) }; /* wlan.prx copies the two before it returns */
+
+            IFR_LEN(ifr) -= 96;
+            scan.out = out;
+            scan.ifr = ifr;
+            return radio[H_IOCTL](h, cmd, a2, (u32)rest);
+        }
     }
     if (!cable && !own)
         return radio[H_IOCTL](h, cmd, a2, a3);
-    if (cmd == 0x36 && ifr && IFR_IN(ifr)) /* join: the scan entry without its link */
-        memcpy(joined, IFR_IN(ifr), sizeof joined);
-    if (cmd == 0x37 && ifr && IFR_IN(ifr)) /* what am I joined to */
-        memcpy(IFR_IN(ifr), joined, sizeof joined);
-    if (cmd == 0x38)                       /* leave */
+    if (cmd == 0x36 && in) /* join: the scan entry without its link */
+        memcpy(joined, in, sizeof joined);
+    if (cmd == 0x37 && in) /* what am I joined to */
+        memcpy(in, joined, sizeof joined);
+    if (cmd == 0x38)       /* leave */
         cable = 0;
     ifh.signal(h, 0, 0); /* keys, multicast, power saving: nothing to do on a cable */
     return 0;
@@ -270,35 +311,39 @@ static int on_ioctl(u32 *h, u32 cmd, u32 a2, u32 a3)
 
 static int on_send(u32 *h, u32 a1, u32 a2, u32 a3)
 {
-    if (!cable && !own)
+    if (!over_usb && !own)
         return radio[H_SEND](h, a1, a2, a3);
     sceKernelSetEventFlag(tx_event, TX_KICK);
     return 0;
 }
 
 /* "Up" switches the radio on in wlan.prx and signals once it is. For the
- * cable the radio stays off and USB is taken instead. */
+ * cable the radio stays off and USB is taken instead. Without a radio
+ * there is nothing to switch on; a scan may follow, and finds the cable. */
 static int on_up(u32 *h, u32 a1, u32 a2, u32 a3)
 {
     trace('u', usb_next, own, 0);
-    if (usb_next) {
+    if (usb_next && !over_usb) {
+        over_usb = 1;
         usbnet_link(1);
-        ifh.signal(h, 0, 0);
-    } else if (own) {
-        ifh.signal(h, 0, 0x80410D12); /* Wi-Fi without a radio: the error wlan.prx gives */
-    } else {
-        return radio[H_UP](h, a1, a2, a3);
     }
+    if (!over_usb && !own)
+        return radio[H_UP](h, a1, a2, a3);
+    ifh.signal(h, 0, 0);
     return 0;
 }
 
 static int on_down(u32 *h, u32 a1, u32 a2, u32 a3)
 {
-    trace('d', usb_next, own, 0);
-    if (!usb_next && !own)
+    int usb = over_usb;
+
+    trace('d', usb, own, 0);
+    over_usb = usb_next = 0;
+    if (!usb && !own)
         return radio[H_DOWN](h, a1, a2, a3);
     cable = 0;
-    usbnet_link(0);
+    if (usb)
+        usbnet_link(0);
     ifh.signal(h, 0, 0);
     return 0;
 }
@@ -317,7 +362,8 @@ static void interpose(u32 *h)
         h[i] = (u32)ours[i];
     }
     handle = h;
-    cable = own = 0;
+    scan.ifr = NULL;
+    cable = over_usb = own = 0;
 }
 
 static int on_attach(u32 *h, const u8 *mac, const char *name)
@@ -334,7 +380,8 @@ static int on_destroy(u32 *h)
 {
     if (h == handle) {
         handle = NULL;
-        cable = 0;
+        scan.ifr = NULL;
+        cable = over_usb = 0;
     }
     return ifh.destroy(h);
 }
@@ -456,7 +503,7 @@ static int on_wlan_attach(void)
 static void own_detach(void)
 {
     handle = NULL;
-    cable = own = 0;
+    cable = over_usb = own = 0;
     ifh.detach(own_handle);
     ifh.destroy(own_handle);
 }
@@ -507,6 +554,17 @@ static int on_check_param(int id)
     return is_usb_profile(id) ? 0 : check_param(id);
 }
 
+/* A profile the user made from the scan's entry: Wi-Fi by its looks, but
+ * its SSID is the cable's. */
+static int has_usb_ssid(int id)
+{
+    char ssid[0x80];
+    int k1 = pspSdkSetK1(0), r = get_param(id, 1, ssid); /* a kernel buffer in a caller's system call */
+
+    pspSdkSetK1(k1);
+    return r >= 0 && !strcmp(ssid, USB_SSID);
+}
+
 /* The profile, as the firmware would read a freshly created one from the
  * registry: DHCP, automatic DNS, no proxy, no security. Its 32 parameters
  * are strings, numbers (4 bytes) or keys (3: 13 bytes, 0x16: 64). "Version"
@@ -521,8 +579,10 @@ static int profile_param(int (*real)(int, int, void *), int id, int param, void 
     int number = param == 0x10 ? 5 : param == 0x11 ? 1 : param == 0x0f ? 8080 : 0;
 
     trace(real == get_param ? 'g' : 'G', id, param, is_usb_profile(id));
-    if (param == 1) /* every connection begins by reading its SSID */
-        usb_next = is_usb_profile(id);
+    /* apctl reads the whole profile before it connects, this one only it
+     * and only through the public function; lists read names and SSIDs. */
+    if (param == 8 && real == get_param)
+        usb_next = is_usb_profile(id) || has_usb_ssid(id);
     if (!is_usb_profile(id) || param < 0 || param > 31 || !data)
         return real(id, param, data);
     if (kind[param] == 's')
@@ -637,7 +697,9 @@ static void ifhandle_arrived(void)
     int i, missing = !attach || !destroy;
 
     handle = NULL;
-    cable = own = 0;
+    cable = over_usb = own = 0;
+    scan.ifr = NULL;
+    signal_hook.addr = 0; /* the module it was in is gone */
     for (i = 0; i < (int)(sizeof wanted / sizeof wanted[0]); i++)
         if (!(*wanted[i].to = (void *)ifh_find(wanted[i].nid)))
             missing = 1;
@@ -645,6 +707,7 @@ static void ifhandle_arrived(void)
         memset(&ifh, 0, sizeof ifh); /* another firmware: Wi-Fi works as ever, the cable does not */
         return;
     }
+    ifh.signal = hook_install(&signal_hook, (u32)ifh.signal, on_signal);
     ifh.attach = hook_install(&attach_hook, attach, on_attach);
     ifh.destroy = hook_install(&destroy_hook, destroy, on_destroy);
     if ((h = ifh.lookup("wlan")) != NULL) /* loaded while a connection program already runs */
@@ -710,6 +773,7 @@ void net_stop(void)
     int i, k, ifhandle_there = ifh.lookup && ifh_find(0x9CBA24D4) == (u32)ifh.lookup;
 
     sctrlHENSetStartModuleHandler(next_start_handler);
+    trace_stop();
     if (own && ifhandle_there)
         own_detach();
     k = pspSdkDisableInterrupts();
@@ -717,7 +781,8 @@ void net_stop(void)
         for (i = H_UP; i <= H_IOCTL; i++)
             handle[i] = (u32)radio[i];
     handle = NULL;
-    cable = own = 0;
+    cable = over_usb = own = 0;
+    hook_remove(&signal_hook, ifh_find(0xF94BAF52));
     hook_remove(&attach_hook, ifh_find(0xAE81C0CB));
     hook_remove(&destroy_hook, ifh_find(0xC9344A59));
     for (i = 0; i < N_FIXED; i++)

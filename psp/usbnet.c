@@ -25,6 +25,8 @@
 #include <pspkernel.h>
 #include <pspusb.h>
 #include <pspusbbus.h>
+#include <pspinit.h>
+#include <systemctrl.h>
 #include <string.h>
 
 #include "usbnet.h"
@@ -94,6 +96,7 @@ static SceUID event = -1, thid = -1;
  * when it wakes, and would take a "sent" meant for the sender with it. */
 static SceUID sent = -1;
 static int on_bus;      /* our driver is started on the bus */
+static int own_bus;     /* and the bus driver by this module: the XMB keeps its own running */
 static int alone;       /* and we started the bus ourselves */
 static int forced;      /* option: 1 alone, 2 beside */
 static int registered, armed;
@@ -204,10 +207,10 @@ static void bus_up(void)
 {
     int i;
 
-    if (on_bus)
-        return;
+    if (on_bus || sceUsbGetDrvState("USBStor_Driver") == 1) /* started */
+        return; /* the XMB's USB connection has the port: it keeps it */
     if (forced == 1 || (!forced && !(sceUsbGetState() & PSP_USB_ACTIVATED))) {
-        sceUsbStart(PSP_USBBUS_DRIVERNAME, 0, 0);
+        own_bus = sceUsbStart(PSP_USBBUS_DRIVERNAME, 0, 0) >= 0;
         sceUsbStart(DRIVER, 0, 0);
         sceUsbActivate(USB_PID);
         on_bus = alone = 1;
@@ -237,11 +240,30 @@ static void bus_down(int for_good)
     disarm();
     sceUsbDeactivate(USB_PID);
     sceUsbStop(DRIVER, 0, 0);
-    if (alone)
-        sceUsbStop(PSP_USBBUS_DRIVERNAME, 0, 0); /* free for the XMB's USB connection */
-    else
+    if (alone && own_bus)
+        sceUsbStop(PSP_USBBUS_DRIVERNAME, 0, 0);
+    else if (!alone)
         sceUsbActivate(USB_PID);                 /* back to usbhostfs alone */
     on_bus = alone = 0;
+}
+
+/* In the XMB a cable going in starts the "USB Connection" by itself (the
+ * setting "USB Auto Connect"), and the cable to the gateway is always in:
+ * that would take the port from under a connection. Sony's bus driver
+ * tells the XMB about the cable through one callback; while this module is
+ * loaded it is not told. "USB Connection" chosen by hand works as ever. */
+static int cable_not_told(SceUID callback, int state)
+{
+    return 0;
+}
+
+static void xmb_is_told_of_the_cable(int told)
+{
+    SceModule *usb = sceKernelFindModuleByName("sceUSB_Driver");
+    u32 notify = sctrlHENFindFunction("sceThreadManager", "ThreadManForKernel", 0xC11BA8C4);
+
+    if (usb && notify && sceKernelInitKeyConfig() == PSP_INIT_KEYCONFIG_VSH)
+        sctrlHookImportByNID(usb, "ThreadManForKernel", 0xC11BA8C4, told ? (void *)notify : cable_not_told);
 }
 
 void usbnet_link(int up)
@@ -316,6 +338,7 @@ int module_start(SceSize args, void *argp)
             sceKernelDeleteEventFlag(sent);
         return 1;
     }
+    xmb_is_told_of_the_cable(0);
     sceKernelStartThread(thid, 0, NULL);
     return 0;
 }
@@ -333,6 +356,7 @@ int module_stop(SceSize args, void *argp)
     SceUInt timeout = 2 * 1000 * 1000;
 
     net_stop();
+    xmb_is_told_of_the_cable(1);
     sceKernelSetEventFlag(event, EV_STOP);
     sceKernelWaitThreadEnd(thid, &timeout);
     sceKernelTerminateDeleteThread(thid);
