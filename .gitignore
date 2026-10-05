@@ -1,0 +1,7 @@
+# What build.mak leaves behind
+*.o
+*.elf
+*.prx
+
+/gateway/target/
+/dist/
