@@ -414,6 +414,10 @@ impl Gateway {
                 if self.tx_error != Some(e.kind()) {
                     logln!("link: cannot send to the PSP, frames are lost: {e}");
                     self.tx_error = Some(e.kind());
+                    if e.kind() == io::ErrorKind::NotConnected {
+                        // Gone, not slow: what it had open has no other end any more.
+                        self.abort_all("the PSP is gone");
+                    }
                 }
             }
         }
