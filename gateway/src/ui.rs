@@ -116,6 +116,7 @@ impl Screen {
     fn on(&mut self, event: Event) {
         match event {
             Event::Waiting => self.set(PSP, "PSP", Mark::Pending, WAITING),
+            Event::Busy => self.set(PSP, "PSP", Mark::Pending, "found, but another program is using it"),
             Event::NoAccess => self.set(PSP, "PSP", Mark::Pending, "found, but no access to USB (try sudo)"),
             // Not a step done yet: the PSP may leave again before it has an address.
             Event::Found => self.set(PSP, "PSP", Mark::Pending, "found, handing out an address"),
@@ -201,8 +202,8 @@ fn keys(screen: &Mutex<Screen>) {
             log::show(false);
             s.draw();
         } else {
-            log::show(true);
             println!("\n  {}   {}\n", paint("1", "Event log"), paint("2", "Enter: back   Ctrl+C: quit"));
+            log::show(true);
         }
         line.clear();
     }

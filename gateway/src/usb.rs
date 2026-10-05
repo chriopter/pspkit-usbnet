@@ -48,7 +48,9 @@ pub enum OpenError {
     /// The device is there, but has no class 0xfd interface with two bulk
     /// endpoints (usbnet.prx not loaded).
     NoInterface,
-    /// Opening or claiming failed (permissions, or another program has it).
+    /// Another program has the interface.
+    Busy,
+    /// Opening or claiming failed otherwise (permissions).
     Failed(String),
 }
 
@@ -60,6 +62,7 @@ impl fmt::Display for OpenError {
                 f,
                 "PSP present, but without the usbnet interface (class 0x{INTERFACE_CLASS:02x})"
             ),
+            OpenError::Busy => write!(f, "another program is using the usbnet interface"),
             OpenError::Failed(e) => write!(f, "cannot use the usbnet interface: {e}"),
         }
     }
@@ -85,7 +88,10 @@ impl UsbConn {
     }
 
     pub fn open_in(ctx: &rusb::Context) -> Result<UsbConn, OpenError> {
-        let fail = |what: &str, e: rusb::Error| OpenError::Failed(format!("{what}: {e}"));
+        let fail = |what: &str, e: rusb::Error| match e {
+            rusb::Error::Busy => OpenError::Busy,
+            e => OpenError::Failed(format!("{what}: {e}")),
+        };
         let devices = ctx.devices().map_err(|e| fail("listing devices", e))?;
         let mut result = OpenError::Absent;
         for dev in devices.iter() {
@@ -362,6 +368,7 @@ impl UsbLink {
                 if last.as_ref() != Some(&e) {
                     logln!("usb: waiting for the device: {e}");
                     self.status.tell(match &e {
+                        OpenError::Busy => Event::Busy,
                         OpenError::Failed(_) => Event::NoAccess,
                         _ => Event::Waiting,
                     });

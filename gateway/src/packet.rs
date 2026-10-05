@@ -328,6 +328,24 @@ pub fn summarize(frame: &[u8]) -> String {
     s
 }
 
+/// The name a DNS query asks for, for the log; "?" if it cannot be read.
+pub fn dns_name(query: &[u8]) -> String {
+    let mut name = String::new();
+    let mut at = 12;
+    while let Some(&len) = query.get(at) {
+        let Some(label) = query.get(at + 1..at + 1 + len as usize) else { break };
+        if len == 0 || len > 63 {
+            break;
+        }
+        if !name.is_empty() {
+            name.push('.');
+        }
+        name.extend(label.iter().map(|&b| if b.is_ascii_graphic() { b as char } else { '?' }));
+        at += 1 + len as usize;
+    }
+    if name.is_empty() { "?".into() } else { name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

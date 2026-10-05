@@ -9,7 +9,9 @@ use std::sync::Arc;
 pub enum Event {
     /// No PSP on USB yet, or its interface is not there.
     Waiting,
-    /// The PSP is there but cannot be opened (permissions, in use).
+    /// The PSP is there, but another program has its interface.
+    Busy,
+    /// The PSP is there, but this user may not open it.
     NoAccess,
     Found,
     /// The connection ended or the cable was pulled.

@@ -118,6 +118,11 @@ impl Gateway {
             });
             match made {
                 Ok(sock) => {
+                    if dns {
+                        logln!("dns: {client} asks for {}", packet::dns_name(payload));
+                    } else {
+                        logln!("udp: {client} -> {dst}");
+                    }
                     let flow = Flow {
                         sock,
                         token,

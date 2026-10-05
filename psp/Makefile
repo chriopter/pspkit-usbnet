@@ -7,6 +7,10 @@ USE_KERNEL_LIBS = 1
 PSP_FW_VERSION = 271
 
 CFLAGS = -O2 -G0 -Wall -fno-builtin-printf
+# make TRACE=1: a diagnosis build that writes ms0:/usbnet-trace.txt
+ifdef TRACE
+CFLAGS += -DTRACE
+endif
 LIBS = -lpspusb_driver -lpspusbbus_driver -lpspsystemctrl_kernel
 
 PSPSDK = $(shell psp-config --pspsdk-path)

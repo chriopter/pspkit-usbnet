@@ -80,6 +80,100 @@ static void hook_remove(struct hook *h, u32 addr_now)
     h->addr = 0;
 }
 
+#ifdef TRACE
+/* A diagnosis build (make TRACE=1): what the firmware asks is written to
+ * ms0:/usbnet-trace.txt, by a thread of its own since the callers' stacks
+ * are small. One line per event: a letter and three numbers. */
+static struct { char what; u32 a, b, c; } ring[512];
+static volatile unsigned ring_in;
+
+static void trace(char what, u32 a, u32 b, u32 c)
+{
+    int k = pspSdkDisableInterrupts();
+    unsigned i = ring_in++ % 512;
+
+    ring[i].what = what; ring[i].a = a; ring[i].b = b; ring[i].c = c;
+    pspSdkEnableInterrupts(k);
+}
+
+static int trace_thread(SceSize args, void *argp)
+{
+    static const char hex[] = "0123456789abcdef";
+    unsigned out = 0;
+
+    for (;;) {
+        sceKernelDelayThread(300 * 1000);
+        if (out == ring_in)
+            continue;
+        SceUID fd = sceIoOpen("ms0:/usbnet-trace.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0666);
+        for (; fd >= 0 && out != ring_in; out++) {
+            char line[32], *p = line;
+            u32 v[3] = { ring[out % 512].a, ring[out % 512].b, ring[out % 512].c };
+            int i, n;
+
+            *p++ = ring[out % 512].what;
+            for (i = 0; i < 3; i++)
+                for (*p++ = ' ', n = 28; n >= 0; n -= 4)
+                    *p++ = hex[(v[i] >> n) & 15];
+            *p++ = '\n';
+            sceIoWrite(fd, line, p - line);
+        }
+        if (fd >= 0)
+            sceIoClose(fd);
+    }
+    return 0;
+}
+
+/* The profile functions this module does not answer (every other one of
+ * sceUtility_netparam_internal, and "latest id"): who calls them, with what.
+ * A line "E n nid address" names slot n; "n a b result" is a call. */
+#define EXTRAS 16
+static struct hook extra_hook[EXTRAS];
+static int (*extra_real[EXTRAS])(u32, u32, u32, u32);
+#define EXTRA(n) static int on_extra##n(u32 a, u32 b, u32 c, u32 d) \
+    { int r = extra_real[n](a, b, c, d); trace('A' + n, a, b, r); return r; }
+EXTRA(0) EXTRA(1) EXTRA(2) EXTRA(3) EXTRA(4) EXTRA(5) EXTRA(6) EXTRA(7)
+EXTRA(8) EXTRA(9) EXTRA(10) EXTRA(11) EXTRA(12) EXTRA(13) EXTRA(14) EXTRA(15)
+static void *const extra_to[EXTRAS] = { on_extra0, on_extra1, on_extra2, on_extra3, on_extra4, on_extra5,
+    on_extra6, on_extra7, on_extra8, on_extra9, on_extra10, on_extra11, on_extra12, on_extra13,
+    on_extra14, on_extra15 };
+
+static void trace_start(void)
+{
+    SceModule *m = sceKernelFindModuleByName("sceUtility_Driver");
+    u32 latest = sctrlHENFindFunction("sceUtility_Driver", "sceUtility", 0x4FED24D8);
+    u8 *e = m ? m->ent_top : NULL, *end = e ? e + m->ent_size : NULL;
+    int n = 0;
+
+    if (latest) {
+        trace('E', n, 0x4FED24D8, latest);
+        extra_real[n] = hook_install(&extra_hook[n], latest, extra_to[n]);
+        n++;
+    }
+    for (; e && e < end && e[8]; e += e[8] * 4) { /* +0 name, +8 length in words, +10 functions, +12 table */
+        const char *name = *(const char **)e;
+        int vars = e[9], funcs = *(u16 *)(e + 10), f;
+        u32 *nids = *(u32 **)(e + 12);
+
+        if (!name || strcmp(name, "sceUtility_netparam_internal"))
+            continue;
+        for (f = 0; f < funcs && n < EXTRAS; f++) {
+            u32 addr = nids[funcs + vars + f];
+
+            if (nids[f] == 0x67C2105B || (*(u32 *)addr >> 26) == 2) /* ours already */
+                continue;
+            trace('E', n, nids[f], addr);
+            extra_real[n] = hook_install(&extra_hook[n], addr, extra_to[n]);
+            n++;
+        }
+    }
+    sceKernelStartThread(sceKernelCreateThread("usbnet_trace", trace_thread, 30, 0x4000, 0, NULL), 0, NULL);
+}
+#else
+#define trace(what, a, b, c) ((void)0)
+#define trace_start() ((void)0)
+#endif
+
 /* ---- ifhandle.prx: loaded by whoever starts networking, gone with it ---- */
 
 #define IFHANDLE "sceNet_Service"
@@ -154,6 +248,7 @@ static int on_ioctl(u32 *h, u32 cmd, u32 a2, u32 a3)
 {
     u32 *ifr = (u32 *)a2;
 
+    trace('i', cmd, usb_next, own);
     if (cmd == 0x34 && ifr) {
         cable = scans_for_usb(ifr);
         if (cable)
@@ -185,6 +280,7 @@ static int on_send(u32 *h, u32 a1, u32 a2, u32 a3)
  * cable the radio stays off and USB is taken instead. */
 static int on_up(u32 *h, u32 a1, u32 a2, u32 a3)
 {
+    trace('u', usb_next, own, 0);
     if (usb_next) {
         usbnet_link(1);
         ifh.signal(h, 0, 0);
@@ -198,6 +294,7 @@ static int on_up(u32 *h, u32 a1, u32 a2, u32 a3)
 
 static int on_down(u32 *h, u32 a1, u32 a2, u32 a3)
 {
+    trace('d', usb_next, own, 0);
     if (!usb_next && !own)
         return radio[H_DOWN](h, a1, a2, a3);
     cable = 0;
@@ -227,6 +324,7 @@ static int on_attach(u32 *h, const u8 *mac, const char *name)
 {
     int r = ifh.attach(h, mac, name);
 
+    trace('a', (u32)h, r, 0);
     if (r == 0 && name && !strcmp(name, "wlan") && h != own_handle)
         interpose(h);
     return r;
@@ -312,6 +410,7 @@ static int (*wlan_ether)(u8 *mac), (*wlan_attach)(void), (*wlan_detach)(void);
 
 static int on_switch(void)
 {
+    trace('s', 0, 0, 0);
     return 1; /* a cable needs no WLAN switch */
 }
 
@@ -333,6 +432,7 @@ static int on_wlan_attach(void)
 {
     int r = net_no_radio ? (int)0x80410D0C : wlan_attach(), k1, i;
 
+    trace('w', r, own, 0);
     if (r >= 0 || own || !ifh.create)
         return r;
     k1 = pspSdkSetK1(0);
@@ -392,33 +492,45 @@ static int usb_profile(void)
     return id;
 }
 
+/* The XMB edits and tests a connection through a working copy in another
+ * slot (0): while a slot holds a copy of the USB profile it is that one. */
+static int usb_copy = -1;
+
 static int is_usb_profile(int id)
 {
-    return id >= 1 && id == usb_profile();
+    return id == usb_copy || (id >= 1 && id == usb_profile());
 }
 
 static int on_check_param(int id)
 {
+    trace('c', id, is_usb_profile(id), 0);
     return is_usb_profile(id) ? 0 : check_param(id);
 }
 
-/* The parameters as psputility_netparam.h numbers them: DHCP, automatic
- * DNS, no proxy, no security. Only the value's own bytes are written: the
- * firmware passes four-byte buffers for the numbers. */
+/* The profile, as the firmware would read a freshly created one from the
+ * registry: DHCP, automatic DNS, no proxy, no security. Its 32 parameters
+ * are strings, numbers (4 bytes) or keys (3: 13 bytes, 0x16: 64). "Version"
+ * 5 and "device" 1 (WLAN) matter: with an older version apctl skips half
+ * of the profile and keeps what the last one left there, which in the XMB
+ * is the Wi-Fi profile read before (error 0x80410A88 with WPA). */
 static int profile_param(int (*real)(int, int, void *), int id, int param, void *data)
 {
+    static const char kind[] = "ssibisssissssisiiiissibiissisiss";
     const char *text = param == 0 ? USB_NAME : param == 1 ? USB_SSID : param == 6 ? "255.255.255.0"
-                     : param == 5 || param == 7 || param == 9 || param == 10 ? "0.0.0.0"
-                     : param == 3 || param == 11 || param == 12 || param == 14 || param == 18 ? "" : NULL;
+                     : param == 5 || param == 7 || param == 9 || param == 10 ? "0.0.0.0" : "";
+    int number = param == 0x10 ? 5 : param == 0x11 ? 1 : param == 0x0f ? 8080 : 0;
 
+    trace(real == get_param ? 'g' : 'G', id, param, is_usb_profile(id));
     if (param == 1) /* every connection begins by reading its SSID */
         usb_next = is_usb_profile(id);
-    if (!is_usb_profile(id))
+    if (!is_usb_profile(id) || param < 0 || param > 31 || !data)
         return real(id, param, data);
-    if (data && text)
+    if (kind[param] == 's')
         strcpy(data, text);
-    else if (data)
-        memset(data, 0, 4);
+    else if (kind[param] == 'i')
+        memcpy(data, &number, 4);
+    else
+        memset(data, 0, param == 3 ? 13 : 64);
     return 0;
 }
 
@@ -434,6 +546,49 @@ static int on_get_param_internal(int id, int param, void *data)
     return profile_param(get_param_internal, id, param, data);
 }
 
+/* The functions that write profiles (their real meaning; PSPLibDoc has
+ * create and delete swapped). The USB profile is not in the registry: what
+ * is written to it is dropped, and nothing can create or delete it. */
+static int (*copy_param)(int from, int to), (*create_param)(int id), (*delete_param)(int id);
+static int (*set_param)(int param, const void *value), (*set_param_internal)(int param, const void *value);
+
+static int on_copy_param(int from, int to)
+{
+    if (is_usb_profile(from)) {
+        if (!is_usb_profile(to))
+            usb_copy = to;
+        return 0;
+    }
+    if (to == usb_copy)
+        usb_copy = -1; /* the slot is another profile's copy now */
+    return is_usb_profile(to) ? 0 : copy_param(from, to);
+}
+
+static int on_create_param(int id)
+{
+    if (id == usb_copy)
+        usb_copy = -1;
+    return is_usb_profile(id) ? 0 : create_param(id);
+}
+
+static int on_delete_param(int id)
+{
+    if (id == usb_copy)
+        usb_copy = -1;
+    return is_usb_profile(id) ? 0 : delete_param(id);
+}
+
+/* Both write to slot 0. */
+static int on_set_param(int param, const void *value)
+{
+    return usb_copy == 0 ? 0 : set_param(param, value);
+}
+
+static int on_set_param_internal(int param, const void *value)
+{
+    return usb_copy == 0 ? 0 : set_param_internal(param, value);
+}
+
 /* ---- putting it all in, and taking it out ---- */
 
 /* The functions hooked for good: in modules that are there from boot. */
@@ -447,6 +602,12 @@ static struct fixed {
     { "sceUtility_Driver", "sceUtility", 0x434D4B3A, on_get_param, (void **)&get_param },
     { "sceUtility_Driver", "sceUtility_netparam_internal", 0x67C2105B, on_get_param_internal,
       (void **)&get_param_internal },
+    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x4CB183A4, on_copy_param, (void **)&copy_param },
+    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x6B1BC62C, on_create_param, (void **)&create_param },
+    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x61D0686E, on_delete_param, (void **)&delete_param },
+    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x5D63AA06, on_set_param, (void **)&set_param },
+    { "sceUtility_Driver", "sceUtility_netparam_internal", 0x239F260D, on_set_param_internal,
+      (void **)&set_param_internal },
     { "sceWlan_Driver", "sceWlanDrv", 0xD7763699, on_switch, NULL },    /* sceWlanGetSwitchState */
     { "sceWlan_Driver", "sceWlanDrv", 0x93440B11, on_switch, NULL },    /* sceWlanDevIsPowerOn */
     { "sceWlan_Driver", "sceWlanDrv", 0x0C622081, on_ether, (void **)&wlan_ether },
@@ -494,6 +655,7 @@ static int (*next_start_handler)(SceModule *);
 
 static int on_module_start(SceModule *module)
 {
+    trace('m', *(u32 *)module->modname, *(u32 *)(module->modname + 4), *(u32 *)(module->modname + 8));
     if (!strcmp(module->modname, IFHANDLE))
         ifhandle_arrived();
     return next_start_handler ? next_start_handler(module) : 0;
@@ -533,6 +695,7 @@ int net_start(void)
         if (fixed[i].original)
             *fixed[i].original = original;
     }
+    trace_start();
     if (ifh_find(0xAE81C0CB))
         ifhandle_arrived();
     next_start_handler = sctrlHENSetStartModuleHandler(on_module_start);
