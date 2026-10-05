@@ -11,6 +11,7 @@
 
 use crate::device::FrameDevice;
 use crate::logln;
+use crate::status::{Event, Status};
 use rusb::{Direction, TransferType, UsbContext};
 use std::fmt;
 use std::io;
@@ -305,12 +306,7 @@ pub struct UsbLink {
     conn: Mutex<Option<Arc<UsbConn>>>,
     /// The last reason for not having a device, so each is logged once.
     last_problem: Mutex<Option<OpenError>>,
-}
-
-impl Default for UsbLink {
-    fn default() -> Self {
-        Self::new()
-    }
+    status: Status,
 }
 
 impl UsbLink {
@@ -319,7 +315,7 @@ impl UsbLink {
         self.ctx.is_some()
     }
 
-    pub fn new() -> UsbLink {
+    pub fn new(status: Status) -> UsbLink {
         let ctx = match rusb::Context::new() {
             Ok(c) => Some(c),
             Err(e) => {
@@ -327,7 +323,7 @@ impl UsbLink {
                 None
             }
         };
-        UsbLink { ctx, conn: Mutex::new(None), last_problem: Mutex::new(None) }
+        UsbLink { ctx, conn: Mutex::new(None), last_problem: Mutex::new(None), status }
     }
 
     fn current(&self) -> Option<Arc<UsbConn>> {
@@ -339,7 +335,7 @@ impl UsbLink {
         if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, conn)) {
             *cur = None;
             logln!("usb: device lost ({why})");
-            crate::ui::psp_lost();
+            self.status.tell(Event::Lost);
         }
     }
 
@@ -355,7 +351,7 @@ impl UsbLink {
         match opened {
             Ok(c) => {
                 logln!("usb: device found ({})", c.describe());
-                crate::ui::psp_found();
+                self.status.tell(Event::Found);
                 *self.last_problem.lock().unwrap() = None;
                 let c = Arc::new(c);
                 *self.conn.lock().unwrap() = Some(c.clone());
@@ -365,9 +361,9 @@ impl UsbLink {
                 let mut last = self.last_problem.lock().unwrap();
                 if last.as_ref() != Some(&e) {
                     logln!("usb: waiting for the device: {e}");
-                    crate::ui::psp_waiting(match &e {
-                        OpenError::Failed(_) => "found, but no access to USB (try sudo)",
-                        _ => crate::ui::WAITING,
+                    self.status.tell(match &e {
+                        OpenError::Failed(_) => Event::NoAccess,
+                        _ => Event::Waiting,
                     });
                     *last = Some(e);
                 }

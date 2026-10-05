@@ -15,5 +15,6 @@ pub mod dhcp;
 pub mod gateway;
 pub mod log;
 pub mod packet;
+pub mod status;
 pub mod ui;
 pub mod usb;

@@ -14,6 +14,7 @@
 use crate::device::{FrameDevice, RECV_BUF};
 use crate::dhcp;
 use crate::logln;
+use crate::status::{Event, Status};
 use crate::packet::{self, BROADCAST_MAC, ETH_HDR, Mac, mac_str};
 use mio::net::{TcpStream, UdpSocket};
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -49,7 +50,8 @@ const TCP_RX_BUF: usize = 65535;
 const TCP_TX_BUF: usize = 512 * 1024;
 const MAX_CONNS: usize = 128;
 const MAX_FLOWS: usize = 256;
-const MAX_PEERS: usize = 256;
+/// Datagrams taken from one host socket before the others get their turn.
+const UDP_BURST: usize = 64;
 /// In a flow's key, in place of the destination: any.
 const ANY: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -73,6 +75,8 @@ pub struct Config {
     pub resolvers: Option<Vec<SocketAddr>>,
     /// Log a summary of every frame.
     pub verbose: bool,
+    /// Who is told how far the connection is.
+    pub status: Status,
     /// Print totals this often, when they changed.
     pub stats_interval: Option<Duration>,
 }
@@ -87,6 +91,7 @@ impl Default for Config {
             lease_secs: 86400,
             resolvers: None,
             verbose: false,
+            status: Status::default(),
             stats_interval: None,
         }
     }
@@ -124,7 +129,8 @@ pub struct Stats {
     pub dhcp_leases: u64,
 }
 
-/// The nameservers of a resolv.conf.
+/// The nameservers of a resolv.conf. A link-local one ("fe80::1%eth0") is
+/// left out: it cannot be reached without its interface.
 pub fn parse_resolv_conf(text: &str) -> Vec<SocketAddr> {
     text.lines()
         .filter_map(|line| {
@@ -132,9 +138,7 @@ pub fn parse_resolv_conf(text: &str) -> Vec<SocketAddr> {
             if words.next()? != "nameserver" {
                 return None;
             }
-            let addr = words.next()?;
-            let addr = addr.split('%').next()?;
-            Some(SocketAddr::new(addr.parse::<IpAddr>().ok()?, 53))
+            Some(SocketAddr::new(words.next()?.parse::<IpAddr>().ok()?, 53))
         })
         .collect()
 }
@@ -220,9 +224,8 @@ struct Flow {
     targets: Vec<SocketAddr>,
     target: usize,
     dns: bool,
-    /// Host addresses the PSP has sent to, under the name it used for them
-    /// (10.77.0.1 is this computer), so their answers come from that name.
-    peers: HashMap<SocketAddr, SocketAddrV4>,
+    /// When the PSP last sent through it. What arrives does not count, or a
+    /// stranger could keep the port open.
     last: Instant,
     /// Since when a DNS query has been waiting for its answer.
     waiting_since: Option<Instant>,
@@ -597,7 +600,7 @@ impl Gateway {
 
         if self.stats.dhcp_leases > 0 {
             let open = self.conns.values().filter(|c| c.stream.is_some()).count();
-            crate::ui::traffic(self.stats.tcp_down, self.stats.tcp_up, open);
+            self.cfg.status.tell(Event::Traffic { down: self.stats.tcp_down, up: self.stats.tcp_up, connections: open });
         }
 
         let mut next: Option<Instant> = None;
@@ -666,11 +669,9 @@ mod tests {
     #[test]
     fn resolv_conf() {
         let text = "# comment\nsearch lan\nnameserver 127.0.0.53\nnameserver fe80::1%eth0\n\
-                    nameserver bogus\noptions edns0\n";
+                    nameserver 2001:db8::1\nnameserver bogus\noptions edns0\n";
         let r = parse_resolv_conf(text);
-        assert_eq!(r.len(), 2);
-        assert_eq!(r[0], "127.0.0.53:53".parse().unwrap());
-        assert!(r[1].is_ipv6());
+        assert_eq!(r, ["127.0.0.53:53".parse().unwrap(), "[2001:db8::1]:53".parse().unwrap()]);
     }
 
     #[test]

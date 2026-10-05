@@ -2,30 +2,20 @@
 //! one line of traffic. On a terminal the step in progress and the traffic
 //! are rewritten in place, in colour; into a file or pipe every change is a
 //! plain line of its own and traffic is left out. Enter switches between
-//! this and the live log of events (which `-v` shows from the start).
+//! this and the event log.
 
+use crate::log;
+use crate::status::{Event, Status};
 use std::io::{IsTerminal, Write};
 use std::net::UdpSocket;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-pub const WAITING: &str = "waiting: choose \"Hi-Speed USB\" on the PSP";
 
 const NETWORK: usize = 0;
 const USB: usize = 1;
 const PSP: usize = 2;
 const CONNECTION: usize = 3;
-
-/// The steps are on the screen (otherwise: the live log).
-static STEPS: AtomicBool = AtomicBool::new(false);
-static SCREEN: Mutex<Screen> = Mutex::new(Screen {
-    version: "",
-    steps: [const { None }; 4],
-    traffic: None,
-    open: false,
-    drawn: None,
-});
+const WAITING: &str = "waiting: choose \"Hi-Speed USB\" on the PSP";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mark {
@@ -45,20 +35,23 @@ struct Screen {
     drawn: Option<Instant>,
 }
 
-/// Whether the live log is shown.
-pub fn verbose() -> bool {
-    !STEPS.load(Ordering::Relaxed)
-}
-
 fn paint(code: &str, text: &str) -> String {
     let plain = !std::io::stdout().is_terminal() || std::env::var_os("NO_COLOR").is_some();
     if plain { text.to_string() } else { format!("\x1b[{code}m{text}\x1b[0m") }
 }
 
+fn amount(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.2} GB", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
+        b => format!("{} KB", b >> 10),
+    }
+}
+
 impl Screen {
     /// One line; `stays`: the next line goes below it.
     fn line(&mut self, text: &str, stays: bool) {
-        if verbose() {
+        if log::shown() {
             return;
         }
         let mut out = std::io::stdout().lock();
@@ -81,13 +74,17 @@ impl Screen {
                 Mark::Failed => ("\u{2717}", "31"),
                 Mark::Pending => ("\u{2022}", "33"),
             };
-            let detail = if mark == Mark::Done { paint("2", &detail) } else { paint(colour, &detail) };
-            let text = format!("  {}  {} {detail}", paint(colour, sign), paint("1", &format!("{name:<11}")));
-            self.line(&text, mark != Mark::Pending);
+            let detail = paint(if mark == Mark::Done { "2" } else { colour }, &detail);
+            let name = paint("1", &format!("{name:<11}"));
+            self.line(&format!("  {}  {name} {detail}", paint(colour, sign)), mark != Mark::Pending);
         }
     }
 
+    /// A step stands differently; the ones after it are open again.
     fn set(&mut self, i: usize, name: &'static str, mark: Mark, detail: &str) {
+        if matches!(&self.steps[i], Some((n, m, d)) if (*n, *m, d.as_str()) == (name, mark, detail)) {
+            return;
+        }
         self.steps[i] = Some((name, mark, detail.to_string()));
         self.steps[i + 1..].fill(None);
         self.traffic = None;
@@ -101,112 +98,113 @@ impl Screen {
         }
     }
 
-    /// Everything again, after the live log.
-    fn redraw(&mut self) {
+    /// Everything, at the start and when coming back from the event log.
+    fn draw(&mut self) {
         self.open = false;
-        let keys = "Enter: live log   Ctrl+C: quit";
-        println!("\n  {}   {}\n", paint("1", &format!("pspkit-usbnet {}", self.version)), paint("2", keys));
+        let head = paint("1", &format!("pspkit-usbnet {}", self.version));
+        println!("\n  {head}   {}\n", paint("2", "Enter: event log   Ctrl+C: quit"));
         for i in 0..self.steps.len() {
             self.step_line(i);
         }
         self.traffic_line();
     }
+
+    fn connected(&self) -> bool {
+        matches!(self.steps[CONNECTION], Some((_, Mark::Done, _)))
+    }
+
+    fn on(&mut self, event: Event) {
+        match event {
+            Event::Waiting => self.set(PSP, "PSP", Mark::Pending, WAITING),
+            Event::NoAccess => self.set(PSP, "PSP", Mark::Pending, "found, but no access to USB (try sudo)"),
+            Event::Found => {
+                self.set(PSP, "PSP", Mark::Done, "found");
+                self.set(CONNECTION, "Connection", Mark::Pending, "handing out an address");
+            }
+            Event::Lost => {
+                // A traffic line stays as the total; an unfinished step goes.
+                if self.open && self.traffic.is_some() && !log::shown() {
+                    println!();
+                    self.open = false;
+                }
+                self.set(PSP, "PSP", Mark::Pending, WAITING);
+            }
+            Event::Connected(ip) if !self.connected() => {
+                self.set(CONNECTION, "Connected", Mark::Done, &ip.to_string());
+            }
+            Event::Connected(_) => {}
+            // At most twice a second, and only on a terminal.
+            Event::Traffic { down, up, connections } => {
+                let now = Instant::now();
+                let soon = self.drawn.is_some_and(|t| now < t + Duration::from_millis(500));
+                if !self.connected() || soon || !std::io::stdout().is_terminal() {
+                    return;
+                }
+                let busy = match connections {
+                    0 => "idle".to_string(),
+                    1 => "1 connection".to_string(),
+                    n => format!("{n} connections"),
+                };
+                self.traffic = Some(format!("\u{2193} {}   \u{2191} {}   {busy}", amount(down), amount(up)));
+                self.drawn = Some(now);
+                self.traffic_line();
+            }
+        }
+    }
 }
 
-/// The head and the two steps that do not need the PSP.
-pub fn start(version: &'static str, usb_ok: bool) {
-    STEPS.store(true, Ordering::Relaxed);
-    let mut s = SCREEN.lock().unwrap();
-    s.version = version;
-    s.redraw();
-    // No packet is sent: this only asks which address would be used.
-    let lan = UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| s.connect("1.1.1.1:53").and_then(|_| s.local_addr()));
-    match lan {
-        Ok(a) => s.set(NETWORK, "Network", Mark::Done, &format!("ok  {}", a.ip())),
-        Err(_) => s.set(NETWORK, "Network", Mark::Failed, "offline: the PSP will only reach this computer"),
+/// Puts the screen up, with the two steps that do not need the PSP, and
+/// returns where the rest is told to. `usb`: whether USB can be used at all.
+pub fn start(version: &'static str, usb: impl FnOnce(&Status) -> bool) -> Status {
+    log::show(false);
+    let screen = Arc::new(Mutex::new(Screen {
+        version,
+        steps: [const { None }; 4],
+        traffic: None,
+        open: false,
+        drawn: None,
+    }));
+    let listener = screen.clone();
+    let status = Status::to(move |event| listener.lock().unwrap().on(event));
+    {
+        let mut s = screen.lock().unwrap();
+        s.draw();
+        // No packet is sent: this only asks which address would be used.
+        let lan = UdpSocket::bind("0.0.0.0:0")
+            .and_then(|s| s.connect("1.1.1.1:53").and_then(|_| s.local_addr()));
+        match lan {
+            Ok(a) => s.set(NETWORK, "Network", Mark::Done, &format!("ok  {}", a.ip())),
+            Err(_) => s.set(NETWORK, "Network", Mark::Failed, "offline: the PSP will only reach this computer"),
+        }
     }
-    if usb_ok {
-        s.set(USB, "USB", Mark::Done, "ok");
-    } else {
-        s.set(USB, "USB", Mark::Failed, "cannot be used");
+    let usb_ok = usb(&status);
+    {
+        let mut s = screen.lock().unwrap();
+        if usb_ok {
+            s.set(USB, "USB", Mark::Done, "ok");
+        } else {
+            s.set(USB, "USB", Mark::Failed, "cannot be used");
+        }
+        s.on(Event::Waiting);
     }
-    s.set(PSP, "PSP", Mark::Pending, WAITING);
-    drop(s);
     if std::io::stdin().is_terminal() {
-        std::thread::spawn(keys);
+        std::thread::spawn(move || keys(&screen));
     }
+    status
 }
 
-/// Enter switches between the steps and the live log.
-fn keys() {
+/// Enter switches between the steps and the event log.
+fn keys(screen: &Mutex<Screen>) {
     let mut line = String::new();
     while std::io::stdin().read_line(&mut line).is_ok_and(|n| n > 0) {
-        let mut s = SCREEN.lock().unwrap();
-        if verbose() {
-            STEPS.store(true, Ordering::Relaxed);
-            s.redraw();
+        let mut s = screen.lock().unwrap();
+        if log::shown() {
+            log::show(false);
+            s.draw();
         } else {
-            STEPS.store(false, Ordering::Relaxed);
-            println!("\n  {}   {}\n", paint("1", "Live log"), paint("2", "Enter: back   Ctrl+C: quit"));
+            log::show(true);
+            println!("\n  {}   {}\n", paint("1", "Event log"), paint("2", "Enter: back   Ctrl+C: quit"));
         }
         line.clear();
     }
-}
-
-pub fn psp_waiting(why: &str) {
-    SCREEN.lock().unwrap().set(PSP, "PSP", Mark::Pending, why);
-}
-
-pub fn psp_found() {
-    let mut s = SCREEN.lock().unwrap();
-    s.set(PSP, "PSP", Mark::Done, "found");
-    s.set(CONNECTION, "Connection", Mark::Pending, "handing out an address");
-}
-
-/// The connection ended or the cable was pulled: back to waiting. A traffic
-/// line stays as the total; an unfinished step goes.
-pub fn psp_lost() {
-    let mut s = SCREEN.lock().unwrap();
-    if s.open && s.traffic.is_some() && !verbose() {
-        println!();
-        s.open = false;
-    }
-    s.set(PSP, "PSP", Mark::Pending, WAITING);
-}
-
-pub fn connected(ip: &str) {
-    let mut s = SCREEN.lock().unwrap();
-    if !matches!(s.steps[CONNECTION], Some((_, Mark::Done, _))) {
-        s.set(CONNECTION, "Connected", Mark::Done, ip);
-    }
-}
-
-fn amount(bytes: u64) -> String {
-    match bytes {
-        b if b >= 1 << 30 => format!("{:.2} GB", b as f64 / (1u64 << 30) as f64),
-        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
-        b => format!("{} KB", b >> 10),
-    }
-}
-
-/// The traffic line, at most twice a second and only on a terminal.
-pub fn traffic(down: u64, up: u64, connections: usize) {
-    let mut s = SCREEN.lock().unwrap();
-    let now = Instant::now();
-    let connected = matches!(s.steps[CONNECTION], Some((_, Mark::Done, _)));
-    if !connected || !std::io::stdout().is_terminal() {
-        return;
-    }
-    if s.drawn.is_some_and(|t| now < t + Duration::from_millis(500)) {
-        return;
-    }
-    let busy = match connections {
-        0 => "idle".to_string(),
-        1 => "1 connection".to_string(),
-        n => format!("{n} connections"),
-    };
-    s.traffic = Some(format!("\u{2193} {}   \u{2191} {}   {busy}", amount(down), amount(up)));
-    s.drawn = Some(now);
-    s.traffic_line();
 }

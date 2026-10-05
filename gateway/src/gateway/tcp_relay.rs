@@ -165,6 +165,10 @@ impl Gateway {
     }
 
     pub(super) fn abort_all(&mut self, why: &str) {
+        let flows: Vec<ConnKey> = self.flows.keys().copied().collect();
+        for key in flows {
+            self.remove_flow(&key);
+        }
         let keys: Vec<ConnKey> = self.conns.keys().copied().collect();
         for key in keys {
             let conn = self.conns.get_mut(&key).unwrap();

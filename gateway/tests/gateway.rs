@@ -548,12 +548,53 @@ fn udp_is_relayed() {
     });
     let mut psp = Psp::booted(Config::default());
     let h = udp_socket(&mut psp, 4001);
-    assert_eq!(udp_exchange(&mut psp, h, Ipv4Addr::LOCALHOST, port, b"abc"), b"cba");
+    assert_eq!(udp_exchange(&mut psp, h, GW_IP, port, b"abc"), b"cba");
     assert_eq!(udp_exchange(&mut psp, h, GW_IP, port, b"12345"), b"54321");
     // The largest datagram that fits a frame.
     let big = noise(packet::MAX_UDP_PAYLOAD, 5);
     let mut rev = big.clone();
     rev.reverse();
     assert_eq!(udp_exchange(&mut psp, h, GW_IP, port, &big), rev);
+    psp.unplug();
+}
+
+/// One port on the host per port of the PSP, whatever the destination, and
+/// anyone may send to it: what games need whose players connect directly.
+#[test]
+fn udp_port_is_the_same_for_all_and_open_to_all() {
+    let a = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let b = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let stranger = UdpSocket::bind("127.0.0.1:0").unwrap();
+    for s in [&a, &b] {
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    }
+    let mut psp = Psp::booted(Config::default());
+    let h = udp_socket(&mut psp, 4002);
+    let mut seen = Vec::new();
+    for server in [&a, &b] {
+        let to = IpEndpoint::new(IpAddress::Ipv4(GW_IP), server.local_addr().unwrap().port());
+        psp.sockets.get_mut::<udp::Socket>(h).send_slice(b"hello", to).unwrap();
+        psp.until("the datagram to be sent", 5, |psp| {
+            psp.sockets.get_mut::<udp::Socket>(h).can_send().then_some(())
+        });
+        let mut buf = [0u8; 16];
+        let mut got = None;
+        psp.until("the datagram at the server", 5, |_| {
+            server.set_nonblocking(true).unwrap();
+            got = server.recv_from(&mut buf).ok();
+            got.map(|_| ())
+        });
+        seen.push(got.unwrap().1);
+    }
+    assert_eq!(seen[0], seen[1], "both servers see the same port of the gateway");
+
+    // Someone the PSP never sent to reaches it there, under its own address.
+    stranger.send_to(b"knock", seen[0]).unwrap();
+    let from = psp.until("the stranger's datagram", 5, |psp| {
+        let (data, meta) = psp.sockets.get_mut::<udp::Socket>(h).recv().ok()?;
+        assert_eq!(data, b"knock");
+        Some(meta.endpoint)
+    });
+    assert_eq!(from, IpEndpoint::new(IpAddress::Ipv4(GW_IP), stranger.local_addr().unwrap().port()));
     psp.unplug();
 }

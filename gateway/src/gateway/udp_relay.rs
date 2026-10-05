@@ -52,7 +52,7 @@ impl Gateway {
             }
             dhcp::Action::Reply(_) | dhcp::Action::BootpReply => {
                 self.stats.dhcp_leases += 1;
-                crate::ui::connected(&lease.client.to_string());
+                self.cfg.status.tell(Event::Connected(lease.client));
                 logln!(
                     "dhcp: lease {}/{} to {mac}{name} for {} s, router and DNS {}",
                     lease.client,
@@ -124,7 +124,6 @@ impl Gateway {
                         targets,
                         target: 0,
                         dns,
-                        peers: HashMap::new(),
                         last: now,
                         waiting_since: None,
                     };
@@ -154,10 +153,6 @@ impl Gateway {
             }
             flow.sock.send(payload)
         } else {
-            if flow.peers.len() >= MAX_PEERS && !flow.peers.contains_key(&to) {
-                flow.peers.clear();
-            }
-            flow.peers.insert(to, dst);
             flow.sock.send_to(payload, to)
         };
         match sent {
@@ -180,21 +175,28 @@ impl Gateway {
     pub(super) fn on_udp_readable(&mut self, key: ConnKey) {
         let (client, dst) = key;
         let mac = self.client_mac.unwrap_or(BROADCAST_MAC);
+        let gateway_ip = self.cfg.gateway_ip;
         let mut buf = std::mem::take(&mut self.scratch);
         let mut frames = Vec::new();
         if let Some(flow) = self.flows.get_mut(&key) {
             let mut errors = 0;
             loop {
+                if frames.len() == UDP_BURST {
+                    // Not empty yet: ask to be told again, others first.
+                    let _ = self.poll.registry().reregister(&mut flow.sock, flow.token, Interest::READABLE);
+                    break;
+                }
                 let got = if flow.dns {
                     flow.sock.recv(&mut buf).map(|n| (n, Some(dst)))
                 } else {
-                    // From anyone; under the name the PSP knows the sender by.
-                    flow.sock.recv_from(&mut buf).map(|(n, from)| {
-                        let name = flow.peers.get(&from).copied().or(match from {
-                            SocketAddr::V4(a) => Some(a),
-                            SocketAddr::V6(_) => None,
-                        });
-                        (n, name)
+                    // From anyone. This computer is 10.77.0.1 to the PSP, always:
+                    // one fixed name, so nothing has to be remembered per sender.
+                    flow.sock.recv_from(&mut buf).map(|(n, from)| match from {
+                        SocketAddr::V4(a) if a.ip().is_loopback() => {
+                            (n, Some(SocketAddrV4::new(gateway_ip, a.port())))
+                        }
+                        SocketAddr::V4(a) => (n, Some(a)),
+                        SocketAddr::V6(_) => (n, None),
                     })
                 };
                 match got {
@@ -203,7 +205,6 @@ impl Gateway {
                     }
                     Ok((_, None)) => {}
                     Ok((n, Some(from))) => {
-                        flow.last = Instant::now();
                         flow.waiting_since = None;
                         if flow.dns {
                             self.stats.dns_answers += 1;

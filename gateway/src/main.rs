@@ -85,10 +85,14 @@ fn main() -> ExitCode {
         return ping_test(&cfg);
     }
 
-    let link = UsbLink::new();
+    // The screen of steps, or with -v the event log alone.
+    let mut link = None;
     if verbose == 0 {
-        ui::start(env!("CARGO_PKG_VERSION"), link.usable());
+        cfg.status = ui::start(env!("CARGO_PKG_VERSION"), |status| {
+            link.insert(UsbLink::new(status.clone())).usable()
+        });
     }
+    let link = link.unwrap_or_else(|| UsbLink::new(cfg.status.clone()));
     logln!(
         "pspkit-usbnetd {}: gateway {}/{} ({}), client {}",
         env!("CARGO_PKG_VERSION"),
