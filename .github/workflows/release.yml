@@ -1,0 +1,47 @@
+name: Release
+
+# A tag v* builds pspkit-usbnetd for Linux, Windows and macOS (release.sh) and
+# usbnet.prx in the pspdev container, and publishes them on a GitHub release
+# of that tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gateway:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: gateway }
+      - name: zig, for the Linux and Windows builds
+        if: runner.os == 'Linux'
+        run: pip install --break-system-packages ziglang cargo-zigbuild
+      - run: cargo test --manifest-path gateway/Cargo.toml
+      - run: ./release.sh
+      - name: usbnet.prx, in the pspdev container
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w pspdev/pspdev:latest make -C psp
+          cp psp/usbnet.prx dist/
+      - uses: actions/upload-artifact@v7
+        with: { name: "gateway-${{ matrix.os }}", path: dist/* }
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gateway]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with: { path: out, merge-multiple: true }
+      - run: gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
