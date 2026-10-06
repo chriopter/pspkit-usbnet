@@ -2,7 +2,8 @@ name: Release
 
 # A tag v* builds pspkit-usbnetd for Linux, Windows and macOS (release.sh) and
 # usbnet.prx in the pspdev container, and publishes them on a GitHub release
-# of that tag.
+# of that tag. usbnet-psp.zip is the plugin as a store installs it (PSPDX):
+# usbnet.prx and the licences, all at the top level.
 on:
   push:
     tags: ["v*"]
@@ -27,12 +28,13 @@ jobs:
         run: pip install --break-system-packages ziglang cargo-zigbuild
       - run: cargo test --manifest-path gateway/Cargo.toml
       - run: ./release.sh
-      - name: usbnet.prx, in the pspdev container
+      - name: usbnet.prx, in the pspdev container, and usbnet-psp.zip
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/w" -w /w pspdev/pspdev:latest make -C psp
           cp psp/usbnet.prx dist/
-          (cd dist && sha256sum usbnet.prx >> SHA256SUMS-linux)
+          zip -j dist/usbnet-psp.zip psp/usbnet.prx LICENSE THIRD_PARTY_PSPLINK_LICENSE
+          (cd dist && sha256sum usbnet.prx usbnet-psp.zip >> SHA256SUMS-linux)
       - uses: actions/upload-artifact@v7
         with: { name: "gateway-${{ matrix.os }}", path: dist/* }
 

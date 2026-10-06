@@ -63,6 +63,7 @@ Network Settings → Infrastructure Mode → New Connection → Scan → "Hi-Spe
 - USB is only taken while connected
 - Hold START at power-on to start without plugins
 - ARK plugin line: `always, ms0:/seplugins/usbnet.prx, on`
+- In the [PSPDX catalog](https://chriopter.github.io/pspdx-catalog/) as a plugin: `usbnet-psp.zip`
 - With PSPLink: `pspsh -e "ldstart host0:/usbnet.prx"`
 - Options: `alone`, `beside`, `nowlan`
 
