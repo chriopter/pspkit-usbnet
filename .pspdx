@@ -4,7 +4,10 @@
   "name": "pspkit-usbnet",
   "type": "plugin",
   "category": "plugin",
-  "tags": ["plugin", "network", "usb"],
+  "tags": [
+    "network",
+    "usb"
+  ],
   "summary": "Bring your PSP online over the USB cable.",
   "author": "chriopter",
   "license": "MIT",
