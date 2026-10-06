@@ -33,7 +33,9 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/w" -w /w pspdev/pspdev:latest make -C psp
           cp psp/usbnet.prx dist/
-          zip -j dist/usbnet-psp.zip psp/usbnet.prx LICENSE THIRD_PARTY_PSPLINK_LICENSE
+          cp assets/icon0.png dist/ICON0.PNG
+          zip -j dist/usbnet-psp.zip psp/usbnet.prx dist/ICON0.PNG LICENSE THIRD_PARTY_PSPLINK_LICENSE
+          rm dist/ICON0.PNG
           (cd dist && sha256sum usbnet.prx usbnet-psp.zip >> SHA256SUMS-linux)
       - uses: actions/upload-artifact@v7
         with: { name: "gateway-${{ matrix.os }}", path: dist/* }
