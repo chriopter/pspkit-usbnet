@@ -18,11 +18,17 @@
  * Nothing polls: one thread sleeps until a frame arrives, one (in net.c)
  * until the stack has a frame to send.
  *
+ * An application asks whether the gateway is there, before and without
+ * connecting, through the device "usbnet:" (usbnet_api.h, and the end of
+ * this file). Looking takes USB like a connection does, for as long as it
+ * looks.
+ *
  * Options after the path: "alone" and "beside" say which of the two bus
  * cases it is instead of looking; "nowlan" behaves as if there were no
  * radio (see net.c), for tests.
  */
 #include <pspkernel.h>
+#include <pspsdk.h>
 #include <pspusb.h>
 #include <pspusbbus.h>
 #include <pspinit.h>
@@ -30,6 +36,7 @@
 #include <string.h>
 
 #include "usbnet.h"
+#include "usbnet_api.h"
 
 PSP_MODULE_INFO("usbnet", PSP_MODULE_KERNEL, 1, 0);
 
@@ -117,7 +124,7 @@ static void name_the_model(void)
 
 /* ---- state ---- */
 
-enum { EV_RECEIVED = 1, EV_DETACHED = 2, EV_STOP = 4, EV_LINK_UP = 8, EV_LINK_DOWN = 16 };
+enum { EV_RECEIVED = 1, EV_DETACHED = 2, EV_STOP = 4, EV_LINK_UP = 8, EV_LINK_DOWN = 16, EV_PROBE = 32 };
 
 static SceUID event = -1, thid = -1;
 /* Its own flag: the receiving thread's wait clears every bit of "event"
@@ -128,6 +135,8 @@ static int own_bus;     /* and the bus driver by this module: the XMB keeps its 
 static int alone;       /* and we started the bus ourselves */
 static int forced;      /* option: 1 alone, 2 beside */
 static int registered, armed;
+static volatile int linked; /* a connection over the cable wants the bus */
+static u32 cancelled;   /* when the receive request was last called back */
 
 static unsigned char in[BATCH] __attribute__((aligned(64)));
 static unsigned char out[BATCH] __attribute__((aligned(64)));
@@ -140,6 +149,13 @@ static struct UsbdDeviceReq rx_req, tx_req;
 static volatile int rx_out, tx_out;
 
 /* ---- what the bus driver calls, in interrupt context ---- */
+
+/* The time, in units of 1024 microseconds: near enough a millisecond, and
+ * 32 bits of it last seven weeks. */
+static u32 now(void)
+{
+    return (u32)(sceKernelGetSystemTimeWide() >> 10);
+}
 
 static int usb_request(int arg1, int arg2, struct DeviceRequest *req)
 {
@@ -195,6 +211,7 @@ static void disarm(void)
 {
     if (rx_out)
         sceUsbbdReqCancelAll(&endp[2]);
+    cancelled = now();
     armed = 0;
 }
 
@@ -231,7 +248,8 @@ void tx_flush(void)
     tx_out = 1;
     if (sceUsbbdReqSend(&tx_req) < 0) {
         tx_out = 0;
-    } else if (sceKernelWaitEventFlag(sent, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits, &timeout) < 0) {
+    } else if (sceKernelWaitEventFlag(sent, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits, &timeout) < 0
+               && tx_out) { /* still out: the bus going down takes it back itself */
         sceUsbbdReqCancelAll(&endp[1]); /* nobody listening: the stack sends again */
         timeout = 1000 * 1000;
         sceKernelWaitEventFlag(sent, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits, &timeout);
@@ -246,11 +264,16 @@ static int connected(void)
     return sceUsbGetState() & PSP_USB_CONNECTION_ESTABLISHED;
 }
 
+static int storage(void)
+{
+    return sceUsbGetDrvState("USBStor_Driver") == 1; /* started */
+}
+
 static void bus_up(void)
 {
     int i;
 
-    if (on_bus || sceUsbGetDrvState("USBStor_Driver") == 1) /* started */
+    if (on_bus || storage())
         return; /* the XMB's USB connection has the port: it keeps it */
     if (forced == 1 || (!forced && !(sceUsbGetState() & PSP_USB_ACTIVATED))) {
         own_bus = sceUsbStart(PSP_USBBUS_DRIVERNAME, 0, 0) >= 0;
@@ -321,33 +344,153 @@ void usbnet_link(int up)
     sceKernelSetEventFlag(event, up ? EV_LINK_UP : EV_LINK_DOWN);
 }
 
+/* ---- is the gateway there? ----
+ *
+ * Asked through the device at the end of this file, by any thread; done
+ * here, on the cable's thread, so that an asker that is killed while it
+ * waits leaves nothing behind. The bus comes up as for a connection, and
+ * once the host has taken the device the gateway is asked for a sign of
+ * life twice a second. Any frame from the cable is that sign: only the
+ * gateway talks on this interface. net.c hands a frame to the stack only
+ * while a connection is up, so the answers go no further than here.
+ *
+ * A connection beginning while this looks finds the bus up and keeps it;
+ * one that is up already is not touched, the question travels with its
+ * frames. Otherwise the bus goes down again at the end, the way it does
+ * after a connection (beside PSPLink that means it stays). */
+
+#define PROBE_MAX 10000     /* ms an asker may look */
+#define ARP_EVERY 500
+#define NO_CABLE_AFTER 1500 /* the port says "no cable" this long after the bus came up */
+#define HEARD_FOR 5000      /* how long "the gateway was heard" is said */
+
+static volatile u32 heard, probe_from, probe_until, failed_at; /* times, see now() */
+static volatile int heard_any, probe_asked, failed;
+static volatile int callers, stopping;
+static int probing;
+static u32 probe_began, arp_at;
+
+/* Over; error: what the askers are told where it could not look at all. */
+static void probe_end(int error)
+{
+    int k = pspSdkDisableInterrupts();
+
+    if (error) {
+        failed = error;
+        failed_at = now();
+        probe_asked = 0;
+    }
+    pspSdkEnableInterrupts(k);
+    net_probe(0);
+    probing = 0;
+    if (!linked)
+        bus_down(0);
+}
+
+static void probe_begin(void)
+{
+    if (probing || !probe_asked)
+        return; /* the one under way answers this asker too; or it has, already */
+    probing = 1;
+    probe_began = now();
+    arp_at = probe_began - ARP_EVERY;
+    if (on_bus)
+        return;
+    if (storage()) {
+        probe_end(USBNET_BUSY);
+        return;
+    }
+    bus_up();
+    if (!on_bus) /* beside PSPLink, and the PC did not take the two */
+        probe_end(USBNET_NO_CABLE);
+}
+
+static void probe_step(void)
+{
+    u32 t = now();
+    /* Decided with the askers shut out: one that comes after this is a
+     * new probe, one that came before is counted in. */
+    int k = pspSdkDisableInterrupts();
+    int over = (heard_any && (int)(heard - probe_from) >= 0) || (int)(t - probe_until) >= 0;
+
+    if (over)
+        probe_asked = 0;
+    pspSdkEnableInterrupts(k);
+    if (over) {
+        probe_end(0);
+    } else if (connected()) {
+        if (t - arp_at >= ARP_EVERY) {
+            arp_at = t;
+            net_probe(1);
+        }
+    } else if (alone && !(sceUsbGetState() & PSP_USB_CABLE_CONNECTED) && t - probe_began >= NO_CABLE_AFTER) {
+        probe_end(USBNET_NO_CABLE);
+    }
+}
+
+/* An asker's side, on its own thread. It holds nothing while it waits. */
+static int probe(u32 ms)
+{
+    u32 start = now(), span;
+    int k;
+
+    if (ms == 0)
+        return heard_any && start - heard < HEARD_FOR;
+    span = (ms > PROBE_MAX ? PROBE_MAX : ms) * 125 / 128;
+    k = pspSdkDisableInterrupts();
+    if (!probe_asked || (int)(start + span - probe_until) > 0)
+        probe_until = start + span;
+    probe_from = start;
+    probe_asked = 1;
+    pspSdkEnableInterrupts(k);
+    sceKernelSetEventFlag(event, EV_PROBE);
+    for (;;) {
+        if (stopping)
+            return USBNET_STOPPED;
+        if (heard_any && (int)(heard - start) >= 0)
+            return 1;
+        if (failed && (int)(failed_at - start) >= 0)
+            return failed;
+        if (now() - start >= span)
+            return 0;
+        sceKernelDelayThread(20 * 1000);
+    }
+}
+
 static int cable_thread(SceSize size, void *argp)
 {
-    int waited = 0; /* turns of the loop with a cancelled request not back */
-
     name_the_model();
     registered = sceUsbbdRegister(&driver) >= 0;
     for (;;) {
         /* Armed, or off the bus, only an event wakes this up. On the bus
-         * with the cable out it looks once a second for the PC. */
-        SceUInt timeout = 1000 * 1000;
+         * with the cable out it looks once a second for the PC, and while
+         * it looks for the gateway twenty times. */
+        SceUInt timeout;
         u32 bits = 0;
 
-        if (rx_out && !armed && ++waited > 2)
+        if (rx_out && !armed && now() - cancelled > 2000)
             rx_out = 0;
-        if (on_bus && !armed && !rx_out && connected()) {
-            waited = 0;
+        if (on_bus && !armed && !rx_out && connected())
             arm_receive();
-        }
+        if (probing)
+            probe_step();
+        timeout = probing ? 50 * 1000 : 1000 * 1000;
         if (sceKernelWaitEventFlag(event, 0xff, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits,
-                                   on_bus && !armed ? &timeout : NULL) < 0)
+                                   probing || (on_bus && !armed) ? &timeout : NULL) < 0)
             continue;
         if (bits & EV_STOP)
             break;
-        if (bits & EV_LINK_DOWN)
-            bus_down(0);
-        if (bits & EV_LINK_UP)
+        if (bits & EV_LINK_DOWN) {
+            linked = 0;
+            if (!probing) /* else when it has looked */
+                bus_down(0);
+        }
+        if (bits & EV_LINK_UP) {
+            linked = 1;
             bus_up();
+        }
+        if (bits & EV_PROBE)
+            probe_begin();
         if (bits & EV_DETACHED) {
             disarm();
         } else if ((bits & EV_RECEIVED) && armed && on_bus) {
@@ -358,6 +501,8 @@ static int cable_thread(SceSize size, void *argp)
                 int len = in[at] | in[at + 1] << 8;
                 if (len == 0 || at + 2 + len > n)
                     break;
+                heard = now();
+                heard_any = 1;
                 net_receive(in + at + 2, len);
                 at += 2 + len;
             }
@@ -365,6 +510,63 @@ static int cable_thread(SceSize size, void *argp)
     }
     return 0;
 }
+
+/* ---- the device "usbnet:" ---- */
+
+static int state(void)
+{
+    int usb = sceUsbGetState(), s = 0;
+
+    if (usb < 0)
+        usb = 0;
+    if (usb & PSP_USB_CABLE_CONNECTED)
+        s |= USBNET_CABLE;
+    if (on_bus && (usb & PSP_USB_CONNECTION_ESTABLISHED))
+        s |= USBNET_BUS;
+    if (linked)
+        s |= USBNET_LINK;
+    if (heard_any && now() - heard < HEARD_FOR)
+        s |= USBNET_GATEWAY;
+    return s;
+}
+
+/* Called on the asker's thread, through sceIoDevctl. From an application
+ * k1 says "user": what it points at must not be the kernel's, and the
+ * kernel's own functions are called below as the kernel. */
+static int dev_devctl(PspIoDrvFileArg *arg, const char *name, unsigned int cmd, void *indata, int inlen,
+                      void *outdata, int outlen)
+{
+    u32 k1 = pspSdkSetK1(0), ms;
+    int r = USBNET_INVALID, k = pspSdkDisableInterrupts();
+
+    callers++;
+    pspSdkEnableInterrupts(k);
+    if (stopping) {
+        r = USBNET_STOPPED;
+    } else if (cmd == USBNET_VERSION) {
+        r = USBNET_API;
+    } else if (cmd == USBNET_STATE) {
+        r = state();
+    } else if (cmd == USBNET_PROBE && indata && inlen == 4
+               && !(k1 && (((u32)indata | ((u32)indata + 3)) & 0x80000000))) {
+        memcpy(&ms, indata, 4);
+        r = probe(ms);
+    }
+    k = pspSdkDisableInterrupts();
+    callers--;
+    pspSdkEnableInterrupts(k);
+    pspSdkSetK1(k1);
+    return r;
+}
+
+static int dev_nothing(PspIoDrvArg *arg)
+{
+    return 0;
+}
+
+static PspIoDrvFuncs dev_funcs = { .IoInit = dev_nothing, .IoExit = dev_nothing, .IoDevctl = dev_devctl };
+static PspIoDrv dev = { "usbnet", 0x10, 0x800, "USBNET", &dev_funcs };
+static int dev_added;
 
 int module_start(SceSize args, void *argp)
 {
@@ -397,6 +599,7 @@ int module_start(SceSize args, void *argp)
     }
     xmb_is_told_of_the_cable(0);
     sceKernelStartThread(thid, 0, NULL);
+    dev_added = sceIoAddDrv(&dev) >= 0; /* without it everything else works as ever */
     return 0;
 }
 
@@ -404,14 +607,20 @@ int module_start(SceSize args, void *argp)
  * connection: with the radio absent the interface the stack is using would
  * go with the module.
  *
- * The hooks first, then the thread, then the bus as it was found, all
- * before returning and from this thread (left to the module's own thread,
- * the bus did not always come back on 6.60). Beside PSPLink the cable drops
- * once more in here. */
+ * The device first, and whoever is asking it sent home; then the hooks,
+ * the thread, the bus as it was found, all before returning and from this
+ * thread (left to the module's own thread, the bus did not always come back
+ * on 6.60). Beside PSPLink the cable drops once more in here. */
 int module_stop(SceSize args, void *argp)
 {
     SceUInt timeout = 2 * 1000 * 1000;
+    int i;
 
+    stopping = 1;
+    if (dev_added)
+        sceIoDelDrv("usbnet");
+    for (i = 0; i < 100 && callers; i++)
+        sceKernelDelayThread(20 * 1000);
     net_stop();
     xmb_is_told_of_the_cable(1);
     sceKernelSetEventFlag(event, EV_STOP);

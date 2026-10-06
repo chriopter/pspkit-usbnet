@@ -72,6 +72,7 @@ The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would a
 - Linux: run with `sudo`, or add a udev rule for `054c:01c9`
 - Windows: install the WinUSB driver once ([Zadig](https://zadig.akeo.ie))
 - The PC is a gateway with NAT, like a home router
+- One gateway serves up to four PSPs at once, each on its own cable
 - DNS is the PC's; `--dns IP` picks another server, or set one in the connection on the PSP
 - The connection is an ordinary saved one: edit or delete it like any other
 - USB is only taken while connected
@@ -80,6 +81,30 @@ The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would a
 - In the [PSPDX catalog](https://chriopter.github.io/pspdx-catalog/) as a plugin: `usbnet-psp.zip`
 - With PSPLink: `pspsh -e "ldstart host0:/usbnet.prx"`
 - Options: `alone`, `beside`, `nowlan`
+
+</details>
+
+<details>
+<summary><b>For developers</b></summary>
+
+- An app can ask whether the gateway is there, before and without connecting: `sceIoDevctl("usbnet:", command, ...)`
+- Nothing to import or link. No plugin, or one from before this: the call fails with `0x80020321` (no such device)
+- `1` VERSION: the interface's number, `1`
+- `2` STATE, at once, bits: `1` cable in a host (known while USB is active), `2` plugin on the bus, `4` connected over the cable, `8` gateway heard in the last 5 s
+- `3` PROBE, in: `u32` time in ms (up to 10000): returns `1` gateway there, `0` not there, as soon as it knows
+- PROBE errors: `-1` cable not in a host, `-2` USB storage has the port, `-3` plugin unloading, `-4` unknown command or argument
+- PROBE takes USB while it looks and gives it back, unless a connection has it; a connection that is up is not disturbed. With 0 ms it does not look: `1` if the gateway was heard in the last 5 s
+- It blocks: call it from a thread of its own if the screen has to keep drawing
+- With the gateway running the answer takes one to two seconds, 20 ms while the plugin is on the bus (connected, or beside PSPLink)
+- The numbers as a header: [`psp/usbnet_api.h`](psp/usbnet_api.h); a test: [`tests/probe`](tests/probe)
+
+```c
+unsigned ms = 6000;
+int there = sceIoDevctl("usbnet:", 3, &ms, sizeof ms, NULL, 0);
+if (there == 1)                 { /* connect: the gateway answers */ }
+else if (there == 0x80020321)   { /* no plugin, or an old one: ask the user */ }
+else                            { /* not there (0), or why it could not look (< 0) */ }
+```
 
 </details>
 

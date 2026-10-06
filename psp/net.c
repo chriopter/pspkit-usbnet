@@ -388,6 +388,39 @@ static int on_destroy(u32 *h)
 
 /* ---- frames ---- */
 
+static int (*wlan_ether)(u8 *mac);
+
+/* "Who has 10.77.0.1?", asked as the PSP the gateway hands 10.77.0.2: the
+ * gateway answers that as soon as it has the cable, connection or not, and
+ * usbnet.c takes any frame from it as the sign that it is there. An
+ * ordinary request: one from 0.0.0.0 is an address probe, which not every
+ * stack answers. It goes out through this thread like every frame, so a
+ * connection's own are not disturbed. */
+static volatile int arp_wanted;
+
+static void put_arp(void)
+{
+    static const u8 head[] = { 0, 1, 8, 0, 6, 4, 0, 1 }, none[6]; /* Ethernet, IPv4, request */
+    u8 mac[6], *f = tx_reserve();
+
+    if (!f) {
+        tx_flush();
+        if (!(f = tx_reserve()))
+            return;
+    }
+    if (!wlan_ether || wlan_ether(mac) < 0 || !memcmp(mac, none, 6))
+        memcpy(mac, own_mac, 6);
+    memset(f, 0, 60);
+    memset(f, 0xff, 6);
+    memcpy(f + 6, mac, 6);
+    f[12] = 0x08, f[13] = 0x06;
+    memcpy(f + 14, head, 8);
+    memcpy(f + 22, mac, 6);
+    memcpy(f + 28, "\x0a\x4d\x00\x02", 4);
+    memcpy(f + 38, "\x0a\x4d\x00\x01", 4);
+    tx_commit(60);
+}
+
 /* What the stack wants sent: taken from its queue, copied flat, put on the
  * cable together. Without a connection there is nowhere to send it. */
 static int tx_thread(SceSize size, void *argp)
@@ -412,9 +445,20 @@ static int tx_thread(SceSize size, void *argp)
             }
             ifh.freem(m);
         }
+        if (arp_wanted) {
+            arp_wanted = 0;
+            put_arp();
+        }
         tx_flush();
     }
     return 0;
+}
+
+void net_probe(int ask)
+{
+    arp_wanted = ask;
+    if (ask)
+        sceKernelSetEventFlag(tx_event, TX_KICK);
 }
 
 /* A frame from the cable goes up as an mbuf from the stack's own pool,
@@ -453,7 +497,7 @@ void net_receive(const u8 *frame, int len)
 
 /* ---- wlan.prx without a radio ---- */
 
-static int (*wlan_ether)(u8 *mac), (*wlan_attach)(void), (*wlan_detach)(void);
+static int (*wlan_attach)(void), (*wlan_detach)(void);
 
 static int on_switch(void)
 {

@@ -16,5 +16,6 @@ int net_present(void);                        /* another copy of this module is 
 int net_start(void);                          /* < 0: not this firmware, nothing hooked */
 void net_stop(void);
 void net_receive(const u8 *frame, int len);   /* a frame from the cable */
+void net_probe(int ask);                      /* the gateway is asked for a sign of life with the next transfer */
 
 #endif
