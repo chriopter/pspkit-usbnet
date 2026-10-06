@@ -9,7 +9,10 @@
  * circle 2000, start 8, up 10, down 40, left 80, right 20). A first line
  * "shot N" asks for a picture every N milliseconds: ms0:/shots/NNN.raw
  * (16 bytes of header: "SHOT", line width, pixel format, time; then 272
- * lines as they are in video memory).
+ * lines as they are in video memory). A first line "film N" instead films:
+ * a frame every N milliseconds into host0:/film0.raw, film1.raw, ... (PSPLink's host folder),
+ * each the time in milliseconds (4 bytes) and 480x272 pixels of 16 bits
+ * (5650), whatever the screen's own format.
  */
 #include <pspkernel.h>
 #include <pspctrl.h>
@@ -20,7 +23,7 @@
 PSP_MODULE_INFO("pad", PSP_MODULE_KERNEL, 1, 0);
 
 static struct { u32 from, to, buttons; } press[256];
-static int presses, shot_every;
+static int presses, shot_every, film_every;
 static u32 started;
 static int (*read_real)(SceCtrlData *, int), (*peek_real)(SceCtrlData *, int);
 
@@ -79,6 +82,9 @@ static void timetable(void)
     if (!strncmp(p, "shot", 4)) {
         p += 4;
         shot_every = number(&p, 10);
+    } else if (!strncmp(p, "film", 4)) {
+        p += 4;
+        film_every = number(&p, 10);
     }
     while (*p && presses < 256) {
         while (*p == '\n' || *p == '\r')
@@ -133,6 +139,77 @@ static int shots(SceSize args, void *argp)
     return 0;
 }
 
+/* While filming, host0:/pad.live ("count buttons", buttons in hex) presses
+ * from the PC: each new count is one press of 200 ms. */
+static void live(void)
+{
+    static u32 seen;
+    char text[32];
+    SceUID fd = sceIoOpen("host0:/pad.live", PSP_O_RDONLY, 0);
+    int n = fd >= 0 ? sceIoRead(fd, text, sizeof text - 1) : 0;
+    const char *p = text;
+    u32 count;
+
+    if (fd >= 0)
+        sceIoClose(fd);
+    text[n > 0 ? n : 0] = 0;
+    count = number(&p, 10);
+    if (count != seen && presses < 256) {
+        seen = count;
+        press[presses].from = now();
+        press[presses].to = now() + 200;
+        press[presses].buttons = number(&p, 16);
+        presses++;
+    }
+}
+
+static int film(SceSize args, void *argp)
+{
+    static u16 part[480 * 34];   /* an eighth of the screen: the kernel has no room for a whole one */
+    char name[] = "host0:/film0.raw";   /* a new file whenever the USB bus restarted under the old one */
+    SceUID fd = -1;
+
+    for (;;) {
+        void *top = NULL;
+        int width = 0, format = 0, k1 = pspSdkSetK1(0), x, y;
+        u32 at = now();
+
+        sceDisplayGetFrameBuf(&top, &width, &format, 0);
+        pspSdkSetK1(k1);
+        if (fd < 0 && name[11] <= '9') {
+            fd = sceIoOpen(name, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+            if (fd >= 0)
+                name[11]++;
+        }
+        if (fd >= 0 && top && width >= 480) {
+            int bad = sceIoWrite(fd, &at, 4) != 4;
+
+            for (y = 0; y < 272; y++) {
+                u8 *line = (u8 *)(0x40000000 | (u32)top) + y * width * (format == 3 ? 4 : 2);
+                u16 *to = part + (y % 34) * 480;
+
+                if (format == 3)
+                    for (x = 0; x < 480; x++) {
+                        u32 p = ((u32 *)line)[x];
+                        to[x] = (p >> 3 & 31) | (p >> 10 & 63) << 5 | (p >> 19 & 31) << 11;
+                    }
+                else
+                    memcpy(to, line, 480 * 2);
+                if (y % 34 == 33 && !bad)
+                    bad = sceIoWrite(fd, part, sizeof part) != sizeof part;
+            }
+            if (bad) {
+                sceIoClose(fd);
+                fd = -1;
+            }
+        }
+        live();
+        at = now() - at;
+        sceKernelDelayThread((at < (u32)film_every ? film_every - at : 1) * 1000);
+    }
+    return 0;
+}
+
 int module_start(SceSize args, void *argp)
 {
     u32 read = sctrlHENFindFunction("sceController_Service", "sceCtrl", 0x1F803938);
@@ -146,6 +223,8 @@ int module_start(SceSize args, void *argp)
         sctrlHENPatchSyscall((void *)read, on_read);
         sctrlHENPatchSyscall((void *)peek, on_peek);
     }
+    if (film_every > 0)
+        sceKernelStartThread(sceKernelCreateThread("pad_film", film, 40, 0x4000, 0, NULL), 0, NULL);
     if (shot_every > 0)
         sceKernelStartThread(sceKernelCreateThread("pad_shots", shots, 40, 0x4000, 0, NULL), 0, NULL);
     return 0;
