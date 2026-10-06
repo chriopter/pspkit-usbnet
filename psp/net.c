@@ -475,12 +475,18 @@ static int on_ether(u8 *mac)
 
 /* The two below arrive through a syscall from apctl: k1 says "user", and
  * ifhandle would refuse this module's kernel addresses. */
+#define NO_RADIO ((int)0x80410D0C) /* sceWlanDevAttach: WLAN switch off, or no WLAN hardware */
+
 static int on_wlan_attach(void)
 {
-    int r = net_no_radio ? (int)0x80410D0C : wlan_attach(), k1, i;
+    int r = net_no_radio ? NO_RADIO : wlan_attach(), k1, i;
 
     trace('w', r, own, 0);
-    if (r >= 0 || own || !ifh.create)
+    /* Only that one answer means "no radio". The others are the driver's
+     * own business: 0x80410D0E the chip is still powering up (apctl asks
+     * again), 0x80410D0F its handle is attached already. A second "wlan"
+     * handle beside the driver's brings the console down. */
+    if (r != NO_RADIO || own || !ifh.create)
         return r;
     k1 = pspSdkSetK1(0);
     memset(own_handle, 0, sizeof own_handle);

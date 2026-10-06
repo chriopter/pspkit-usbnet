@@ -105,6 +105,11 @@ static unsigned char in[BATCH] __attribute__((aligned(64)));
 static unsigned char out[BATCH] __attribute__((aligned(64)));
 static int fill;        /* bytes of "out" built so far */
 static struct UsbdDeviceReq rx_req, tx_req;
+/* A request is the bus driver's from the call that hands it over until its
+ * callback: only then may it be filled in again. A cancelled one comes
+ * back through the callback too; should it not, it counts as back after a
+ * second or two. */
+static volatile int rx_out, tx_out;
 
 /* ---- what the bus driver calls, in interrupt context ---- */
 
@@ -126,12 +131,14 @@ static int usb_detach(int arg1, int arg2, int arg3)
 
 static int rx_done(struct UsbdDeviceReq *r, int arg2, int arg3)
 {
+    rx_out = 0;
     sceKernelSetEventFlag(event, EV_RECEIVED);
     return 0;
 }
 
 static int tx_done(struct UsbdDeviceReq *r, int arg2, int arg3)
 {
+    tx_out = 0;
     sceKernelSetEventFlag(sent, 1);
     return 0;
 }
@@ -151,12 +158,14 @@ static void arm_receive(void)
     rx_req.data = in;
     rx_req.size = sizeof in;
     rx_req.func = rx_done;
-    armed = sceUsbbdReqRecv(&rx_req) >= 0;
+    rx_out = armed = 1; /* before the call: the callback may come before it returns */
+    if (sceUsbbdReqRecv(&rx_req) < 0)
+        rx_out = armed = 0;
 }
 
 static void disarm(void)
 {
-    if (armed)
+    if (rx_out)
         sceUsbbdReqCancelAll(&endp[2]);
     armed = 0;
 }
@@ -180,7 +189,7 @@ void tx_flush(void)
     int len = fill;
 
     fill = 0;
-    if (!len)
+    if (!len || tx_out) /* the last transfer is not back yet: the stack sends these frames again */
         return;
     if (len % 64 == 0) /* a transfer ends in a short packet: a zero length does it */
         out[len] = out[len + 1] = 0, len += 2;
@@ -191,9 +200,15 @@ void tx_flush(void)
     tx_req.size = len;
     tx_req.func = tx_done;
     sceKernelClearEventFlag(sent, 0);
-    if (sceUsbbdReqSend(&tx_req) < 0 ||
-        sceKernelWaitEventFlag(sent, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits, &timeout) < 0)
+    tx_out = 1;
+    if (sceUsbbdReqSend(&tx_req) < 0) {
+        tx_out = 0;
+    } else if (sceKernelWaitEventFlag(sent, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits, &timeout) < 0) {
         sceUsbbdReqCancelAll(&endp[1]); /* nobody listening: the stack sends again */
+        timeout = 1000 * 1000;
+        sceKernelWaitEventFlag(sent, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits, &timeout);
+        tx_out = 0;
+    }
 }
 
 /* ---- the bus ---- */
@@ -235,11 +250,18 @@ static void bus_up(void)
  * cable would drop at the end of every connection otherwise. */
 static void bus_down(int for_good)
 {
+    int i;
+
     if (!on_bus || (!alone && !for_good))
         return;
     disarm();
+    if (tx_out)
+        sceUsbbdReqCancelAll(&endp[1]);
+    for (i = 0; i < 20 && (rx_out || tx_out); i++) /* both requests back before the driver goes */
+        sceKernelDelayThread(10 * 1000);
     sceUsbDeactivate(USB_PID);
     sceUsbStop(DRIVER, 0, 0);
+    rx_out = tx_out = 0;
     if (alone && own_bus)
         sceUsbStop(PSP_USBBUS_DRIVERNAME, 0, 0);
     else if (!alone)
@@ -273,6 +295,8 @@ void usbnet_link(int up)
 
 static int cable_thread(SceSize size, void *argp)
 {
+    int waited = 0; /* turns of the loop with a cancelled request not back */
+
     registered = sceUsbbdRegister(&driver) >= 0;
     for (;;) {
         /* Armed, or off the bus, only an event wakes this up. On the bus
@@ -280,8 +304,12 @@ static int cable_thread(SceSize size, void *argp)
         SceUInt timeout = 1000 * 1000;
         u32 bits = 0;
 
-        if (on_bus && !armed && connected())
+        if (rx_out && !armed && ++waited > 2)
+            rx_out = 0;
+        if (on_bus && !armed && !rx_out && connected()) {
+            waited = 0;
             arm_receive();
+        }
         if (sceKernelWaitEventFlag(event, 0xff, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, &bits,
                                    on_bus && !armed ? &timeout : NULL) < 0)
             continue;
