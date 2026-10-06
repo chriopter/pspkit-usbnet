@@ -221,8 +221,10 @@ impl UsbConn {
         let Some(ctx) = &bus.ctx else {
             return Err(OpenError::Failed("libusb did not start".into()));
         };
-        let devices = ctx.devices().map_err(|e| fail("listing devices", e))?;
+        // The list is taken under the lock too: libusb on Windows does not
+        // survive several threads listing devices at the same time.
         let mut held = bus.held.lock().unwrap();
+        let devices = ctx.devices().map_err(|e| fail("listing devices", e))?;
         let mut result = OpenError::Absent;
         for dev in devices.iter() {
             let Ok(dd) = dev.device_descriptor() else { continue };
