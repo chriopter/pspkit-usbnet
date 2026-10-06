@@ -41,6 +41,20 @@ Network Settings → Infrastructure Mode → New Connection → Scan → "Hi-Spe
 
 ## ⚙️ How it works
 
+The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would and sends every network packet through the USB cable; the gateway on the PC is its router. **PSPLink keeps a lane of its own in the same cable**, so you can debug and be online at once.
+
+```
+        PSP                                        PC
+ ┌───────────────────┐                   ┌────────────────────────────┐
+ │  game / app       │                   │                            │
+ │      │ sockets    │                   │                            │
+ │  Sony's network   │                   │                            │
+ │      │            │   one USB cable   │                            │
+ │  usbnet.prx ══════╪═══ network ═══════╪══► pspkit-usbnetd ══► 🌐   │
+ │  usbhostfs  ──────╪─── PSPLink ───────╪──► pspsh, host0:           │
+ └───────────────────┘                   └────────────────────────────┘
+```
+
 <table>
 <tr><th></th><th>Wi-Fi</th><th>USB</th><th>PSPLink</th></tr>
 <tr><td><b>App</b></td><td colspan="2" align="center">sockets</td><td></td></tr>
