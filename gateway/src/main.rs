@@ -2,14 +2,16 @@
 
 use pspkit_usbnetd::device::{FrameDevice, RECV_BUF};
 use pspkit_usbnetd::gateway::{Config, Gateway};
+use pspkit_usbnetd::log;
 use pspkit_usbnetd::logln;
 use pspkit_usbnetd::ui;
 use pspkit_usbnetd::packet::{self, BROADCAST_MAC, ETH_HDR, Mac, mac_str};
-use pspkit_usbnetd::usb::{OpenError, UsbConn, UsbLink};
+use pspkit_usbnetd::usb::{Bus, LINKS, OpenError, UsbConn, UsbLink};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
 /// Bound on 127.0.0.1 by the one gateway that runs.
@@ -25,6 +27,11 @@ DNS to this computer's resolver and relays the PSP's TCP and UDP through
 ordinary sockets. No TAP/TUN device, no root. 10.77.0.1 itself stands for
 this computer: the PSP reaches local services there (as 127.0.0.1).
 
+Up to 4 PSPs are served at once, each on its own cable. Each cable is a LAN
+of its own with these same addresses; the PSPs do not see each other. The
+log names them by model (\"PSP Go\"; the second of a kind \"PSP Go (2)\"), or
+\"PSP 1\", \"PSP 2\" where the plugin is too old to tell.
+
 Usage: pspkit-usbnetd [OPTIONS]
 
 Runs in the foreground until killed and shows how far the connection is.
@@ -37,7 +44,8 @@ Options:
                   given more than once
       --stats     print totals every 10 s, when they changed
       --ping      test mode: ARP for 10.77.0.2, then 5 ICMP echo requests
-                  from 10.77.0.1, print the round-trip times and exit
+                  from 10.77.0.1, print the round-trip times and exit (the
+                  first PSP, if there are several)
   -h, --help      this text
   -V, --version   the version
 
@@ -98,13 +106,11 @@ fn main() -> ExitCode {
     }
 
     // The screen of steps, or with -v the event log alone.
-    let mut link = None;
+    let mut bus = None;
     if verbose == 0 {
-        cfg.status = ui::start(env!("CARGO_PKG_VERSION"), |status| {
-            link.insert(UsbLink::new(status.clone())).usable()
-        });
+        cfg.status = ui::start(env!("CARGO_PKG_VERSION"), || bus.insert(Bus::new()).usable());
     }
-    let link = link.unwrap_or_else(|| UsbLink::new(cfg.status.clone()));
+    let bus = Arc::new(bus.unwrap_or_default());
     logln!(
         "pspkit-usbnetd {}: gateway {}/{} ({}), client {}",
         env!("CARGO_PKG_VERSION"),
@@ -113,13 +119,28 @@ fn main() -> ExitCode {
         mac_str(&cfg.gateway_mac),
         cfg.client_ip
     );
-    let result = Gateway::new(cfg, Arc::new(link)).and_then(|mut gw| gw.run());
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+    // A gateway of its own for every PSP there may be: each cable is its
+    // own LAN, so they share nothing but the bus.
+    let (ended, first_end) = channel();
+    for link in 0..LINKS {
+        let mut cfg = cfg.clone();
+        cfg.status = cfg.status.of(link);
+        let link = UsbLink::new(bus.clone(), cfg.status.clone());
+        let ended = ended.clone();
+        std::thread::spawn(move || {
+            log::set_label(Some(link.label()));
+            let result = Gateway::new(cfg, Arc::new(link)).and_then(|mut gw| gw.run());
+            let _ = ended.send(result);
+        });
+    }
+    // None of them ends unless something is wrong; then all do.
+    match first_end.recv() {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
             eprintln!("pspkit-usbnetd: stopped: {e}");
             ExitCode::from(1)
         }
+        Err(_) => ExitCode::from(1),
     }
 }
 

@@ -50,12 +50,16 @@ static struct ConfigDescriptor confdesc = {
 };
 static struct InterfaceDescriptor interdesc = {
     .bLength = 9, .bDescriptorType = 4, .bNumEndpoints = 2, .bInterfaceClass = 0xFD,
+    .iInterface = 1, /* the driver's string, below; the bus driver numbers it */
 };
 static struct EndpointDescriptor endpdesc[2] = { /* the bus driver numbers them */
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x81, .bmAttributes = 2 },
     { .bLength = 7, .bDescriptorType = 5, .bEndpointAddress = 0x02, .bmAttributes = 2 },
 };
-static unsigned char strp[] = { 0x8, 0x3, 'P', 0, 'S', 0, 'P', 0 };
+/* The interface's string says which PSP this is: the gateway serves
+ * several, each on its own cable, and names them by it. "PSP" alone until
+ * the model is known. */
+static struct StringDescriptor strp = { 2 + 2 * 3, 3, { 'P', 'S', 'P' } };
 static struct UsbEndpoint endp[3] = { { 0, 0, 0 }, { 1, 0, 0 }, { 2, 0, 0 } }; /* control, IN, OUT */
 static struct UsbInterface intp = { 0xFFFFFFFF, 0, 1 };
 static struct UsbData usbdata[2]; /* high speed, full speed */
@@ -85,6 +89,30 @@ static int usb_start(int size, void *p)
     driver.devp = usbdata[1].devdesc;
     driver.confp = &usbdata[1].config;
     return 0;
+}
+
+/* sceKernelGetModel, looked up and not imported: a firmware without it
+ * still loads the module. The SDK's NID, which the CFW translates, then
+ * the one of 6.60 and 6.61 as it is. */
+static void name_the_model(void)
+{
+    static const char *const names[] = {
+        "PSP-1000", "PSP-2000", "PSP-3000", "PSP-3000", "PSP Go", NULL,
+        "PSP-3000", NULL, "PSP-3000", NULL, "PSP Street",
+    };
+    int (*model)(void) = (void *)sctrlHENFindFunction("sceSystemMemoryManager", "SysMemForKernel", 0x6373995D);
+    const char *name;
+    int m, i;
+
+    if (!model)
+        model = (void *)sctrlHENFindFunction("sceSystemMemoryManager", "SysMemForKernel", 0x07C586A1);
+    m = model ? model() : -1;
+    name = m >= 0 && m < (int)(sizeof names / sizeof names[0]) ? names[m] : NULL;
+    if (!name)
+        return;
+    for (i = 0; name[i] && i < 31; i++)
+        strp.bString[i] = name[i];
+    strp.bLength = 2 + 2 * i;
 }
 
 /* ---- state ---- */
@@ -144,7 +172,7 @@ static int tx_done(struct UsbdDeviceReq *r, int arg2, int arg3)
 }
 
 static struct UsbDriver driver = {
-    DRIVER, 3, endp, &intp, NULL, NULL, NULL, NULL, (struct StringDescriptor *)strp,
+    DRIVER, 3, endp, &intp, NULL, NULL, NULL, NULL, &strp,
     usb_request, usb_nothing, (void *)usb_nothing, usb_detach, 0, usb_start, (void *)usb_nothing, NULL,
 };
 
@@ -297,6 +325,7 @@ static int cable_thread(SceSize size, void *argp)
 {
     int waited = 0; /* turns of the loop with a cancelled request not back */
 
+    name_the_model();
     registered = sceUsbbdRegister(&driver) >= 0;
     for (;;) {
         /* Armed, or off the bus, only an event wakes this up. On the bus

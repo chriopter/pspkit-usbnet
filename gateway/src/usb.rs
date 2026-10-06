@@ -8,8 +8,12 @@
 //! now goes out together.
 //!
 //! Only that interface is claimed; interface 0 belongs to usbhostfs_pc.
+//!
+//! Several PSPs, each on its own cable, each have a link of their own. The
+//! links share who holds which device, so that each takes a different one.
 
 use crate::device::FrameDevice;
+use crate::log;
 use crate::logln;
 use crate::status::{Event, Status};
 use rusb::{Direction, TransferType, UsbContext};
@@ -23,6 +27,8 @@ use std::time::{Duration, Instant};
 pub const VENDOR_ID: u16 = 0x054c;
 pub const PRODUCT_ID: u16 = 0x01c9;
 pub const INTERFACE_CLASS: u8 = 0xfd;
+/// PSPs served at once: so many links look for one.
+pub const LINKS: usize = 4;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// The PSP receives into a buffer of this size; one transfer stays below it.
@@ -68,6 +74,118 @@ impl fmt::Display for OpenError {
     }
 }
 
+/// Where a device is plugged in: its bus and the ports down to it. Where
+/// the ports are not known, its address on the bus stands in.
+type Place = (u8, Vec<u8>);
+
+/// What the links of one process share: libusb, and which PSP each holds.
+pub struct Bus {
+    ctx: Option<rusb::Context>,
+    /// The devices held and what they are called. A link looks for a
+    /// device under this lock, so two never go for the same one.
+    held: Mutex<Vec<(Place, String)>>,
+    /// The last reason for not having a device, so each is logged once.
+    last_problem: Mutex<Option<OpenError>>,
+}
+
+impl Bus {
+    pub fn new() -> Bus {
+        let ctx = match rusb::Context::new() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                logln!("usb: libusb does not start: {e}");
+                None
+            }
+        };
+        Bus { ctx, held: Mutex::new(Vec::new()), last_problem: Mutex::new(None) }
+    }
+
+    /// Whether libusb started.
+    pub fn usable(&self) -> bool {
+        self.ctx.is_some()
+    }
+}
+
+impl Default for Bus {
+    fn default() -> Bus {
+        Bus::new()
+    }
+}
+
+/// A held device's entry in the bus; it goes with the connection.
+struct Claim {
+    bus: Arc<Bus>,
+    place: Place,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.bus.held.lock().unwrap().retain(|(p, _)| *p != self.place);
+    }
+}
+
+/// The model in the string the plugin gives its interface ("PSP Go"). None
+/// for anything else: a plugin before 0.1.5 has no string, one that does not
+/// know its model says "PSP", and beside PSPLink the string may be another's.
+pub fn model(told: &str) -> Option<&str> {
+    let told = told.trim_matches(|c: char| c == '\0' || c == ' ');
+    let sane = told.len() <= 16 && told.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-');
+    (sane && told.len() > 3 && told.starts_with("PSP")).then_some(told)
+}
+
+/// What a PSP is called: its model, with a number behind the second of a
+/// kind; without a model "PSP 1", "PSP 2". The first name not in `taken`,
+/// so the only PSP is the first whichever link has it.
+pub fn label(model: Option<&str>, taken: &[String]) -> String {
+    (1..)
+        .map(|n| match model {
+            Some(m) if n == 1 => m.to_string(),
+            Some(m) => format!("{m} ({n})"),
+            None => format!("PSP {n}"),
+        })
+        .find(|name| !taken.contains(name))
+        .unwrap()
+}
+
+/// The usbnet interface in a device's configuration.
+struct Found {
+    interface: u8,
+    ep_in: u8,
+    ep_out: u8,
+    max_packet: usize,
+    /// Where its string is, if it has one.
+    string: Option<u8>,
+}
+
+fn usbnet_interface(dev: &rusb::Device<rusb::Context>) -> Option<Found> {
+    let cfg = dev.active_config_descriptor().ok()?;
+    for intf in cfg.interfaces() {
+        let Some(d) = intf.descriptors().next() else { continue };
+        if d.class_code() != INTERFACE_CLASS {
+            continue;
+        }
+        let (mut ep_in, mut ep_out) = (None, None);
+        for e in d.endpoint_descriptors() {
+            if e.transfer_type() != TransferType::Bulk {
+                continue;
+            }
+            match e.direction() {
+                Direction::In => ep_in = ep_in.or(Some(e.address())),
+                Direction::Out => ep_out = ep_out.or(Some((e.address(), e.max_packet_size()))),
+            }
+        }
+        let (Some(ep_in), Some((ep_out, mps))) = (ep_in, ep_out) else { continue };
+        return Some(Found {
+            interface: d.interface_number(),
+            ep_in,
+            ep_out,
+            max_packet: usize::from(mps).max(1),
+            string: d.description_string_index(),
+        });
+    }
+    None
+}
+
 /// The claimed usbnet interface of one enumerated device.
 pub struct UsbConn {
     handle: Arc<rusb::DeviceHandle<rusb::Context>>,
@@ -79,75 +197,96 @@ pub struct UsbConn {
     ep_out: u8,
     max_packet: usize,
     place: String,
+    /// The interface's string as the PSP gave it.
+    told: Option<String>,
+    label: String,
+    /// Lives as long as this does: the device is another link's to take
+    /// only once the interface has been given up.
+    _claim: Claim,
 }
 
 impl UsbConn {
+    /// The first PSP, for a program with one link.
     pub fn open() -> Result<UsbConn, OpenError> {
-        let ctx = rusb::Context::new().map_err(|e| OpenError::Failed(format!("libusb: {e}")))?;
-        Self::open_in(&ctx)
+        Self::open_in(&Arc::new(Bus::new()))
     }
 
-    pub fn open_in(ctx: &rusb::Context) -> Result<UsbConn, OpenError> {
+    /// A PSP that no other link of `bus` holds. One that cannot be had is
+    /// passed over for the next; its reason is returned if none is left.
+    pub fn open_in(bus: &Arc<Bus>) -> Result<UsbConn, OpenError> {
         let fail = |what: &str, e: rusb::Error| match e {
             rusb::Error::Busy => OpenError::Busy,
             e => OpenError::Failed(format!("{what}: {e}")),
         };
+        let Some(ctx) = &bus.ctx else {
+            return Err(OpenError::Failed("libusb did not start".into()));
+        };
         let devices = ctx.devices().map_err(|e| fail("listing devices", e))?;
+        let mut held = bus.held.lock().unwrap();
         let mut result = OpenError::Absent;
         for dev in devices.iter() {
             let Ok(dd) = dev.device_descriptor() else { continue };
             if dd.vendor_id() != VENDOR_ID || dd.product_id() != PRODUCT_ID {
                 continue;
             }
-            result = OpenError::NoInterface;
-            let Ok(cfg) = dev.active_config_descriptor() else { continue };
-            for intf in cfg.interfaces() {
-                let Some(d) = intf.descriptors().next() else { continue };
-                if d.class_code() != INTERFACE_CLASS {
+            let place: Place = match dev.port_numbers() {
+                Ok(ports) if !ports.is_empty() => (dev.bus_number(), ports),
+                _ => (dev.bus_number(), vec![dev.address()]),
+            };
+            // Another link's PSP is not there for this one. libusb would
+            // not say so: within one process a second claim may succeed.
+            if held.iter().any(|(p, _)| *p == place) {
+                continue;
+            }
+            let Some(found) = usbnet_interface(&dev) else {
+                if result == OpenError::Absent {
+                    result = OpenError::NoInterface;
+                }
+                continue;
+            };
+            let handle = match dev.open() {
+                Ok(h) => h,
+                Err(e) => {
+                    result = fail("open", e);
                     continue;
                 }
-                let (mut ep_in, mut ep_out) = (None, None);
-                for e in d.endpoint_descriptors() {
-                    if e.transfer_type() != TransferType::Bulk {
-                        continue;
-                    }
-                    match e.direction() {
-                        Direction::In => ep_in = ep_in.or(Some(e.address())),
-                        Direction::Out => {
-                            ep_out = ep_out.or(Some((e.address(), e.max_packet_size())))
-                        }
-                    }
-                }
-                let (Some(ep_in), Some((ep_out, mps))) = (ep_in, ep_out) else { continue };
-                let handle = dev.open().map_err(|e| fail("open", e))?;
-                handle
-                    .claim_interface(d.interface_number())
-                    .map_err(|e| fail("claim interface", e))?;
-                let handle = Arc::new(handle);
-                let max_packet = usize::from(mps).max(1);
-                let tx = Arc::new(Tx {
-                    queue: Mutex::new(VecDeque::new()),
-                    queued: Mutex::new(0),
-                    wake: Condvar::new(),
-                    room: Condvar::new(),
-                    failed: AtomicBool::new(false),
-                    stop: AtomicBool::new(false),
-                });
-                {
-                    let (handle, tx) = (handle.clone(), tx.clone());
-                    std::thread::spawn(move || writer(&handle, &tx, ep_out, max_packet));
-                }
-                return Ok(UsbConn {
-                    handle,
-                    tx,
-                    rx: Mutex::new(VecDeque::new()),
-                    interface: d.interface_number(),
-                    ep_in,
-                    ep_out,
-                    max_packet: usize::from(mps).max(1),
-                    place: format!("bus {} device {}", dev.bus_number(), dev.address()),
-                });
+            };
+            if let Err(e) = handle.claim_interface(found.interface) {
+                result = fail("claim interface", e);
+                continue;
             }
+            // Asked once, here; a PSP that does not answer has no model.
+            let told = found.string.and_then(|i| handle.read_string_descriptor_ascii(i).ok());
+            let taken: Vec<String> = held.iter().map(|(_, name)| name.clone()).collect();
+            let label = label(told.as_deref().and_then(model), &taken);
+            held.push((place.clone(), label.clone()));
+            let handle = Arc::new(handle);
+            let tx = Arc::new(Tx {
+                queue: Mutex::new(VecDeque::new()),
+                queued: Mutex::new(0),
+                wake: Condvar::new(),
+                room: Condvar::new(),
+                failed: AtomicBool::new(false),
+                stop: AtomicBool::new(false),
+            });
+            {
+                let (handle, tx) = (handle.clone(), tx.clone());
+                let (ep_out, max_packet) = (found.ep_out, found.max_packet);
+                std::thread::spawn(move || writer(&handle, &tx, ep_out, max_packet));
+            }
+            return Ok(UsbConn {
+                handle,
+                tx,
+                rx: Mutex::new(VecDeque::new()),
+                interface: found.interface,
+                ep_in: found.ep_in,
+                ep_out: found.ep_out,
+                max_packet: found.max_packet,
+                place: format!("bus {} device {}", dev.bus_number(), dev.address()),
+                told,
+                label,
+                _claim: Claim { bus: bus.clone(), place },
+            });
         }
         Err(result)
     }
@@ -160,10 +299,19 @@ impl UsbConn {
     }
 
     pub fn describe(&self) -> String {
+        let told = match &self.told {
+            Some(t) => format!("says \"{t}\""),
+            None => "says no model".to_string(),
+        };
         format!(
-            "{}, interface {}, in 0x{:02x} out 0x{:02x}, max packet {}",
+            "{}, interface {}, in 0x{:02x} out 0x{:02x}, max packet {}, {told}",
             self.place, self.interface, self.ep_in, self.ep_out, self.max_packet
         )
+    }
+
+    /// What this PSP is called among the ones on the bus.
+    pub fn label(&self) -> &str {
+        &self.label
     }
 }
 
@@ -307,29 +455,24 @@ impl FrameDevice for UsbConn {
 /// The USB device as the daemon sees it: always there. While the PSP is
 /// absent `recv` waits for it (looking once a second) and `send` loses the
 /// frame; when the device goes away the link is dropped and found again.
+/// It keeps nothing of a PSP that went: the next one may be any, and the
+/// one that went may come back on another link.
 pub struct UsbLink {
-    ctx: Option<rusb::Context>,
+    bus: Arc<Bus>,
     conn: Mutex<Option<Arc<UsbConn>>>,
-    /// The last reason for not having a device, so each is logged once.
-    last_problem: Mutex<Option<OpenError>>,
+    /// The name of the PSP it has, for the log.
+    label: log::Label,
     status: Status,
 }
 
 impl UsbLink {
-    /// Whether libusb started.
-    pub fn usable(&self) -> bool {
-        self.ctx.is_some()
+    pub fn new(bus: Arc<Bus>, status: Status) -> UsbLink {
+        UsbLink { bus, conn: Mutex::new(None), label: log::Label::default(), status }
     }
 
-    pub fn new(status: Status) -> UsbLink {
-        let ctx = match rusb::Context::new() {
-            Ok(c) => Some(c),
-            Err(e) => {
-                logln!("usb: libusb does not start: {e}");
-                None
-            }
-        };
-        UsbLink { ctx, conn: Mutex::new(None), last_problem: Mutex::new(None), status }
+    /// For the threads that work for this link's PSP (`log::set_label`).
+    pub fn label(&self) -> log::Label {
+        self.label.clone()
     }
 
     fn current(&self) -> Option<Arc<UsbConn>> {
@@ -341,6 +484,9 @@ impl UsbLink {
         if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, conn)) {
             *cur = None;
             logln!("usb: device lost ({why})");
+            self.label.lock().unwrap().clear();
+            // What keeps the next one away is worth saying again.
+            *self.bus.last_problem.lock().unwrap() = None;
             self.status.tell(Event::Lost);
         }
     }
@@ -350,22 +496,22 @@ impl UsbLink {
         if let Some(c) = self.current() {
             return Some(c);
         }
-        let opened = match &self.ctx {
-            Some(ctx) => UsbConn::open_in(ctx),
-            None => Err(OpenError::Failed("libusb did not start".into())),
-        };
-        match opened {
+        match UsbConn::open_in(&self.bus) {
             Ok(c) => {
+                *self.label.lock().unwrap() = c.label().to_string();
                 logln!("usb: device found ({})", c.describe());
-                self.status.tell(Event::Found);
-                *self.last_problem.lock().unwrap() = None;
+                self.status.tell(Event::Found(c.label().to_string()));
+                *self.bus.last_problem.lock().unwrap() = None;
                 let c = Arc::new(c);
                 *self.conn.lock().unwrap() = Some(c.clone());
                 Some(c)
             }
             Err(e) => {
-                let mut last = self.last_problem.lock().unwrap();
-                if last.as_ref() != Some(&e) {
+                // Every idle link runs into the same thing: said by one.
+                // And "no PSP" is not said while other links have theirs.
+                let others = e == OpenError::Absent && !self.bus.held.lock().unwrap().is_empty();
+                let mut last = self.bus.last_problem.lock().unwrap();
+                if !others && last.as_ref() != Some(&e) {
                     logln!("usb: waiting for the device: {e}");
                     self.status.tell(match &e {
                         OpenError::Busy => Event::Busy,
@@ -433,5 +579,48 @@ impl FrameDevice for UsbLink {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_model_is_what_the_plugin_says() {
+        for m in ["PSP-1000", "PSP-2000", "PSP-3000", "PSP Go", "PSP Street"] {
+            assert_eq!(model(m), Some(m));
+        }
+        assert_eq!(model("PSP Go\0"), Some("PSP Go"));
+        // The plugin does not know, usbhostfs's string, something else.
+        assert_eq!(model("PSP"), None);
+        assert_eq!(model("<>"), None);
+        assert_eq!(model(""), None);
+        assert_eq!(model("\"PSP\" Type B"), None);
+        assert_eq!(model("PSP with a very long name"), None);
+    }
+
+    #[test]
+    fn a_psp_is_called_by_its_model() {
+        assert_eq!(label(Some("PSP Go"), &[]), "PSP Go");
+        assert_eq!(label(Some("PSP Go"), &["PSP-1000".into(), "PSP 1".into()]), "PSP Go");
+    }
+
+    #[test]
+    fn two_of_a_kind_are_numbered() {
+        let mut taken = vec![label(Some("PSP-3000"), &[])];
+        taken.push(label(Some("PSP-3000"), &taken));
+        taken.push(label(Some("PSP-3000"), &taken));
+        assert_eq!(taken, ["PSP-3000", "PSP-3000 (2)", "PSP-3000 (3)"]);
+        // The first went away: the next of the kind has its name.
+        assert_eq!(label(Some("PSP-3000"), &taken[1..]), "PSP-3000");
+    }
+
+    #[test]
+    fn without_a_model_they_are_counted() {
+        assert_eq!(label(None, &[]), "PSP 1");
+        assert_eq!(label(None, &["PSP 1".into()]), "PSP 2");
+        assert_eq!(label(None, &["PSP Go".into()]), "PSP 1");
+        assert_eq!(label(None, &["PSP 2".into()]), "PSP 1");
     }
 }

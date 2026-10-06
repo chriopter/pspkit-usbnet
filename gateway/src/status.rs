@@ -1,11 +1,12 @@
 //! How far the connection is, told by the USB link and the gateway to
-//! whoever shows it (`ui`). Nobody listening is the default.
+//! whoever shows it (`ui`). Nobody listening is the default. Each PSP has
+//! its own link and gateway; what they tell goes out with their number.
 
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// No PSP on USB yet, or its interface is not there.
     Waiting,
@@ -13,7 +14,8 @@ pub enum Event {
     Busy,
     /// The PSP is there, but this user may not open it.
     NoAccess,
-    Found,
+    /// A link has a PSP; what it is called.
+    Found(String),
     /// The connection ended or the cable was pulled.
     Lost,
     /// The PSP has its address.
@@ -23,22 +25,31 @@ pub enum Event {
 }
 
 #[derive(Clone, Default)]
-pub struct Status(Option<Arc<dyn Fn(Event) + Send + Sync>>);
+pub struct Status {
+    listener: Option<Arc<dyn Fn(usize, Event) + Send + Sync>>,
+    /// Which of the links this one speaks for, from 0.
+    link: usize,
+}
 
 impl Status {
-    pub fn to(listener: impl Fn(Event) + Send + Sync + 'static) -> Status {
-        Status(Some(Arc::new(listener)))
+    pub fn to(listener: impl Fn(usize, Event) + Send + Sync + 'static) -> Status {
+        Status { listener: Some(Arc::new(listener)), link: 0 }
+    }
+
+    /// The same listener, told about another link.
+    pub fn of(&self, link: usize) -> Status {
+        Status { listener: self.listener.clone(), link }
     }
 
     pub fn tell(&self, event: Event) {
-        if let Some(listener) = &self.0 {
-            listener(event);
+        if let Some(listener) = &self.listener {
+            listener(self.link, event);
         }
     }
 }
 
 impl fmt::Debug for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(if self.0.is_some() { "Status(listener)" } else { "Status(none)" })
+        f.write_str(if self.listener.is_some() { "Status(listener)" } else { "Status(none)" })
     }
 }

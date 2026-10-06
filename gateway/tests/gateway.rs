@@ -4,6 +4,7 @@
 use pspkit_usbnetd::device::{FrameDevice, MemDevice, RECV_BUF};
 use pspkit_usbnetd::gateway::{Config, Gateway};
 use pspkit_usbnetd::packet;
+use pspkit_usbnetd::status::{Event, Status};
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::{dhcpv4, tcp, udp};
@@ -12,7 +13,7 @@ use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpo
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -347,13 +348,17 @@ fn echo_server() -> (u16, JoinHandle<usize>) {
 }
 
 fn echo_through(psp: &mut Psp, dst: Ipv4Addr) {
+    echo_noise_through(psp, dst, 42);
+}
+
+fn echo_noise_through(psp: &mut Psp, dst: Ipv4Addr, seed: u64) {
     let (port, server) = echo_server();
     let h = psp.tcp_connect(dst, port);
     psp.tcp_established(h);
     psp.tcp_write_all(h, b"hello from the PSP");
     assert_eq!(psp.tcp_read_exact(h, 18), b"hello from the PSP");
     // More than any buffer on the way holds at once.
-    let big = noise(700_000, 42);
+    let big = noise(700_000, seed);
     let mut back = Vec::new();
     for chunk in big.chunks(100_000) {
         psp.tcp_write_all(h, chunk);
@@ -375,6 +380,47 @@ fn tcp_echo() {
     // The gateway's own address stands for the host.
     echo_through(&mut psp, GW_IP);
     psp.unplug();
+}
+
+/// Two PSPs, each on its own cable with its own gateway, at the same time.
+/// Both are 10.77.0.2 with the same MAC and use the same ports: nothing of
+/// one may reach the other.
+#[test]
+fn two_psps_each_with_a_gateway() {
+    let told = Arc::new(Mutex::new(Vec::new()));
+    let listener = told.clone();
+    let status = Status::to(move |link, event| listener.lock().unwrap().push((link, event)));
+    // Each waits here with its lease, so that both gateways are busy at once.
+    let both = Arc::new(Barrier::new(2));
+    let psps: Vec<_> = (0..2)
+        .map(|link| {
+            let cfg = Config { status: status.of(link), ..Config::default() };
+            let both = both.clone();
+            thread::spawn(move || {
+                let mut psp = Psp::new(cfg);
+                let (cidr, router, _) = psp.dhcp();
+                assert_eq!(cidr, IpCidr::new(IpAddress::Ipv4(PSP_IP), 24));
+                assert_eq!(router, Some(GW_IP));
+                both.wait();
+                // Its own bytes, and twice: the second connection of each
+                // is from the same port as the other's.
+                echo_noise_through(&mut psp, GW_IP, 1000 + link as u64);
+                echo_noise_through(&mut psp, Ipv4Addr::LOCALHOST, 2000 + link as u64);
+                psp.unplug();
+            })
+        })
+        .collect();
+    for psp in psps {
+        psp.join().expect("a PSP failed");
+    }
+    // Each gateway told of its own PSP, under its own number.
+    let told = told.lock().unwrap();
+    for link in 0..2 {
+        let leases = told.iter().filter(|e| **e == (link, Event::Connected(PSP_IP))).count();
+        assert!(leases >= 1, "link {link} got no lease");
+        assert!(told.iter().any(|(l, e)| *l == link && matches!(e, Event::Traffic { up, .. } if *up >= 1_400_000)));
+    }
+    assert!(told.iter().all(|(l, _)| *l < 2));
 }
 
 #[test]

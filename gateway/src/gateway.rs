@@ -13,6 +13,7 @@
 
 use crate::device::{FrameDevice, RECV_BUF};
 use crate::dhcp;
+use crate::log;
 use crate::logln;
 use crate::status::{Event, Status};
 use crate::packet::{self, BROADCAST_MAC, ETH_HDR, Mac, mac_str};
@@ -326,7 +327,10 @@ impl Gateway {
             let dev = self.dev.clone();
             let waker = self.waker.clone();
             let pending = pending.clone();
+            // The reader's log lines are this gateway's PSP's too.
+            let label = log::label();
             std::thread::Builder::new().name("frame-rx".into()).spawn(move || {
+                log::set_label(label);
                 let mut buf = vec![0u8; RECV_BUF];
                 loop {
                     match dev.recv(&mut buf, None) {
