@@ -11,5 +11,5 @@
   "summary": "Bring your PSP online over the USB cable.",
   "author": "chriopter",
   "license": "MIT",
-  "description": "Network for the PSP over the USB cable: up to ten times faster than Wi-Fi, in all apps and games.\n\nNeeds ARK custom firmware and a program on the PC, the gateway. It is one file for Linux, macOS or Windows, on the same releases page:\nhttps://github.com/chriopter/pspkit-usbnet/releases\n\nAfter installing, restart the PSP.\n\nOnce, create the connection: Network Settings > Infrastructure Mode > New Connection > Scan > \"Hi-Speed USB\" > Security: None > save. Then connect with \"Hi-Speed USB\", like with Wi-Fi, while the gateway runs.\n\nHold START at power-on to start the PSP without plugins."
+  "description": "You need to run the gateway on your PC. Get it at github.com/chriopter/pspkit-usbnet\n\nNetwork for the PSP over the USB cable: up to ten times faster than Wi-Fi, in all apps and games. Needs ARK custom firmware.\n\nAfter installing, restart the PSP.\n\nOnce, create the connection: Network Settings > Infrastructure Mode > New Connection > Scan > \"Hi-Speed USB\" > Security: None > save. Then connect with \"Hi-Speed USB\", like with Wi-Fi, while the gateway runs.\n\nHold START at power-on to start the PSP without plugins."
 }
