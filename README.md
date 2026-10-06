@@ -69,7 +69,7 @@ The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would a
 <details>
 <summary><b>Notes</b></summary>
 
-- Linux: where the PSP may not be opened, the gateway says so and offers to allow it (F + Enter, a udev rule for `054c:01c9`); or run it with `sudo`
+- Linux: run with `sudo`, or add a udev rule for `054c:01c9`
 - Windows: install the WinUSB driver once ([Zadig](https://zadig.akeo.ie))
 - The PC is a gateway with NAT, like a home router
 - One gateway serves up to four PSPs at once, each on its own cable

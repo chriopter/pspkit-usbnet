@@ -53,8 +53,6 @@ struct Screen {
     psps: [Option<Psp>; LINKS],
     /// The lines of the blocks on the terminal, rewritten by the next ones.
     blocks: usize,
-    /// The PSP is there and may not be opened: F offers to allow it.
-    no_access: bool,
 }
 
 /// The terminal's width, so that no line is longer: a wrapped line cannot be
@@ -254,7 +252,6 @@ impl Screen {
 
     /// One PSP, or none: the steps.
     fn one(&mut self, event: Event) {
-        self.no_access = event == Event::NoAccess;
         match event {
             Event::Waiting => self.set(PSP, "PSP", Mark::Pending, WAITING),
             Event::Busy => self.set(PSP, "PSP", Mark::Pending, "found, but another program is using it"),
@@ -351,7 +348,6 @@ pub fn start(version: &'static str, usb: impl FnOnce() -> bool) -> Status {
         drawn: None,
         psps: [const { None }; LINKS],
         blocks: 0,
-        no_access: false,
     }));
     let listener = screen.clone();
     let status = Status::to(move |link, event| listener.lock().unwrap().on(link, event));
@@ -382,24 +378,11 @@ pub fn start(version: &'static str, usb: impl FnOnce() -> bool) -> Status {
     status
 }
 
-/// Enter switches between the steps and the event log. F, where the PSP
-/// may not be opened, allows it: sudo asks for the password right here.
+/// Enter switches between the steps and the event log.
 fn keys(screen: &Mutex<Screen>) {
     let mut line = String::new();
     while std::io::stdin().read_line(&mut line).is_ok_and(|n| n > 0) {
         let mut s = screen.lock().unwrap();
-        if line.trim().eq_ignore_ascii_case("f") && s.no_access && crate::access::CAN_ALLOW && !log::shown() {
-            // Nothing is drawn meanwhile: the screen is held.
-            println!("\n\n  Allowing every user of this computer to use the PSP on USB (a udev rule).\n");
-            let done = crate::access::allow();
-            println!("\n  {}", if done { "Done." } else { "Not done. You can also run the gateway with sudo." });
-            s.no_access = false;
-            s.steps[PSP] = None;
-            s.draw();
-            s.set(PSP, "PSP", Mark::Pending, WAITING);
-            line.clear();
-            continue;
-        }
         if log::shown() {
             log::show(false);
             s.draw();
@@ -423,8 +406,7 @@ mod tests {
             steps: [const { None }; 4],
             traffic: None,
             open: false,
-            no_access: false,
-            drawn: None,
+                drawn: None,
             psps: [const { None }; LINKS],
             blocks: 0,
         }
