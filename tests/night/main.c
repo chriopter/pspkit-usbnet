@@ -11,6 +11,7 @@
  *   a  every other round with connection 1 instead (Wi-Fi): connect only
  *   W  every round with connection 1 (Wi-Fi): connect only
  *   w  the download is written to ms0:   b  64 KiB receive buffer
+ *   B  with w: written in blocks of 256 KiB instead of as it arrives
  *   P  512 KiB packet pool   c  333 MHz   k  load usbnet.prx from this folder
  */
 #include <pspkernel.h>
@@ -137,7 +138,8 @@ static int http_get(const char *path, unsigned *sum, int to_stick)
     static unsigned char buf[32 * 1024];
     char req[128];
     unsigned a = 1, b = 0;
-    int fd = tcp_socket(8975), n, i, header = 1, blank = 0, body = 0;
+    int fd = tcp_socket(8975), n, i, header = 1, blank = 0, body = 0, held = 0;
+    unsigned char *block = to_stick && strchr(flags, 'B') ? malloc(256 * 1024) : NULL;
     SceUID out = to_stick ? sceIoOpen("ms0:/usbnet-test.bin", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0666) : -1;
 
     if (fd < 0)
@@ -149,7 +151,20 @@ static int http_get(const char *path, unsigned *sum, int to_stick)
             blank = buf[i] == '\n' ? blank + 1 : buf[i] == '\r' ? blank : 0;
             header = blank < 2;
         }
-        if (out >= 0)
+        if (out >= 0 && block) {
+            int at = i, left = n - i;
+
+            while (left) {
+                int k = left < 256 * 1024 - held ? left : 256 * 1024 - held;
+
+                memcpy(block + held, buf + at, k);
+                held += k, at += k, left -= k;
+                if (held == 256 * 1024) {
+                    sceIoWrite(out, block, held);
+                    held = 0;
+                }
+            }
+        } else if (out >= 0)
             sceIoWrite(out, buf + i, n - i);
         for (; i < n; i++) {
             a += buf[i];
@@ -162,6 +177,9 @@ static int http_get(const char *path, unsigned *sum, int to_stick)
     }
     i = n < 0 ? sceNetInetGetErrno() : 0;
     sceNetInetClose(fd);
+    if (out >= 0 && held)
+        sceIoWrite(out, block, held);
+    free(block);
     if (out >= 0)
         sceIoClose(out);
     *sum = (b % 65521) << 16 | a % 65521;
