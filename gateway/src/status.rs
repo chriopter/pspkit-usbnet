@@ -14,6 +14,8 @@ pub enum Event {
     Busy,
     /// The PSP is there, but this user may not open it.
     NoAccess,
+    /// The PSP is there, but opening it failed for another reason.
+    Broken,
     /// A link has a PSP; what it is called.
     Found(String),
     /// The connection ended or the cable was pulled.

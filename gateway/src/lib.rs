@@ -10,6 +10,7 @@
 //! * [`gateway`] - the gateway itself, independent of USB
 //! * [`dhcp`], [`packet`] - wire formats
 
+pub mod access;
 pub mod device;
 pub mod dhcp;
 pub mod gateway;

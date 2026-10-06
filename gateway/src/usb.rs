@@ -56,7 +56,10 @@ pub enum OpenError {
     NoInterface,
     /// Another program has the interface.
     Busy,
-    /// Opening or claiming failed otherwise (permissions).
+    /// This user may not open the device (Linux: permissions; Windows: no
+    /// WinUSB driver on the interface).
+    Denied,
+    /// Opening or claiming failed otherwise.
     Failed(String),
 }
 
@@ -69,6 +72,7 @@ impl fmt::Display for OpenError {
                 "PSP present, but without the usbnet interface (class 0x{INTERFACE_CLASS:02x})"
             ),
             OpenError::Busy => write!(f, "another program is using the usbnet interface"),
+            OpenError::Denied => write!(f, "PSP present, but no access to it: {}", crate::access::HINT),
             OpenError::Failed(e) => write!(f, "cannot use the usbnet interface: {e}"),
         }
     }
@@ -216,6 +220,9 @@ impl UsbConn {
     pub fn open_in(bus: &Arc<Bus>) -> Result<UsbConn, OpenError> {
         let fail = |what: &str, e: rusb::Error| match e {
             rusb::Error::Busy => OpenError::Busy,
+            rusb::Error::Access => OpenError::Denied,
+            // What libusb says on Windows where no WinUSB driver is bound.
+            rusb::Error::NotSupported | rusb::Error::NotFound if cfg!(windows) => OpenError::Denied,
             e => OpenError::Failed(format!("{what}: {e}")),
         };
         let Some(ctx) = &bus.ctx else {
@@ -517,7 +524,8 @@ impl UsbLink {
                     logln!("usb: waiting for the device: {e}");
                     self.status.tell(match &e {
                         OpenError::Busy => Event::Busy,
-                        OpenError::Failed(_) => Event::NoAccess,
+                        OpenError::Denied => Event::NoAccess,
+                        OpenError::Failed(_) => Event::Broken,
                         _ => Event::Waiting,
                     });
                     *last = Some(e);

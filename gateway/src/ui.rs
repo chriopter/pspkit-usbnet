@@ -53,6 +53,32 @@ struct Screen {
     psps: [Option<Psp>; LINKS],
     /// The lines of the blocks on the terminal, rewritten by the next ones.
     blocks: usize,
+    /// The PSP is there and may not be opened: F offers to allow it.
+    no_access: bool,
+}
+
+/// The terminal's width, so that no line is longer: a wrapped line cannot be
+/// rewritten in place and would stay, once for every change.
+fn columns() -> usize {
+    #[cfg(unix)]
+    {
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut size) } == 0 && size.ws_col > 0 {
+            // One less: a line that fills the last column wraps on some terminals.
+            return usize::from(size.ws_col) - 1;
+        }
+    }
+    200
+}
+
+/// `text` cut to `room` characters, the last one an ellipsis where it was cut.
+fn fit(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(room.saturating_sub(1)).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 fn paint(code: &str, text: &str) -> String {
@@ -84,7 +110,9 @@ fn row(name: &str, width: usize, mark: Mark, detail: &str) -> String {
         Mark::Failed => ("\u{2717}", "31"),
         Mark::Pending => ("\u{2022}", "33"),
     };
-    let detail = paint(if mark == Mark::Done { "2" } else { colour }, detail);
+    // Two spaces, the mark, two spaces, the name, one space: then the words.
+    let detail = fit(detail, columns().saturating_sub(6 + width.max(name.chars().count())));
+    let detail = paint(if mark == Mark::Done { "2" } else { colour }, &detail);
     let name = paint("1", &format!("{name:<width$}"));
     format!("  {}  {name} {detail}", paint(colour, sign))
 }
@@ -178,8 +206,9 @@ impl Screen {
     fn draw(&mut self) {
         self.open = false;
         self.blocks = 0;
-        let head = paint("1", &format!("pspkit-usbnet {}", self.version));
-        println!("\n  {head}   {}\n", paint("2", "Enter: event log   Ctrl+C: quit"));
+        let head = format!("pspkit-usbnet {}", self.version);
+        let keys = fit("Enter: event log   Ctrl+C: quit", columns().saturating_sub(head.len() + 5));
+        println!("\n  {}   {}\n", paint("1", &head), paint("2", &keys));
         for i in 0..self.steps.len() {
             self.step_line(i);
         }
@@ -203,8 +232,8 @@ impl Screen {
             }
             Event::Lost => gone = self.psps[link].take(),
             // While a PSP is there, the search for a further one is not shown.
-            Event::Waiting | Event::Busy | Event::NoAccess if was > 0 => return,
-            Event::Waiting | Event::Busy | Event::NoAccess => {}
+            Event::Waiting | Event::Busy | Event::NoAccess | Event::Broken if was > 0 => return,
+            Event::Waiting | Event::Busy | Event::NoAccess | Event::Broken => {}
             // A gateway also tells the totals of a PSP that has left.
             Event::Connected(ip) => match &mut self.psps[link] {
                 Some(p) => p.ip = Some(*ip),
@@ -225,10 +254,12 @@ impl Screen {
 
     /// One PSP, or none: the steps.
     fn one(&mut self, event: Event) {
+        self.no_access = event == Event::NoAccess;
         match event {
             Event::Waiting => self.set(PSP, "PSP", Mark::Pending, WAITING),
             Event::Busy => self.set(PSP, "PSP", Mark::Pending, "found, but another program is using it"),
-            Event::NoAccess => self.set(PSP, "PSP", Mark::Pending, "found, but no access to USB (try sudo)"),
+            Event::NoAccess => self.set(PSP, "PSP", Mark::Pending, crate::access::STEP),
+            Event::Broken => self.set(PSP, "PSP", Mark::Pending, "found, but it cannot be opened: see the event log (Enter)"),
             // Not a step done yet: the PSP may leave again before it has an address.
             Event::Found(_) => self.set(PSP, "PSP", Mark::Pending, FOUND),
             Event::Lost => {
@@ -320,6 +351,7 @@ pub fn start(version: &'static str, usb: impl FnOnce() -> bool) -> Status {
         drawn: None,
         psps: [const { None }; LINKS],
         blocks: 0,
+        no_access: false,
     }));
     let listener = screen.clone();
     let status = Status::to(move |link, event| listener.lock().unwrap().on(link, event));
@@ -350,11 +382,24 @@ pub fn start(version: &'static str, usb: impl FnOnce() -> bool) -> Status {
     status
 }
 
-/// Enter switches between the steps and the event log.
+/// Enter switches between the steps and the event log. F, where the PSP
+/// may not be opened, allows it: sudo asks for the password right here.
 fn keys(screen: &Mutex<Screen>) {
     let mut line = String::new();
     while std::io::stdin().read_line(&mut line).is_ok_and(|n| n > 0) {
         let mut s = screen.lock().unwrap();
+        if line.trim().eq_ignore_ascii_case("f") && s.no_access && crate::access::CAN_ALLOW && !log::shown() {
+            // Nothing is drawn meanwhile: the screen is held.
+            println!("\n\n  Allowing every user of this computer to use the PSP on USB (a udev rule).\n");
+            let done = crate::access::allow();
+            println!("\n  {}", if done { "Done." } else { "Not done. You can also run the gateway with sudo." });
+            s.no_access = false;
+            s.steps[PSP] = None;
+            s.draw();
+            s.set(PSP, "PSP", Mark::Pending, WAITING);
+            line.clear();
+            continue;
+        }
         if log::shown() {
             log::show(false);
             s.draw();
@@ -378,6 +423,7 @@ mod tests {
             steps: [const { None }; 4],
             traffic: None,
             open: false,
+            no_access: false,
             drawn: None,
             psps: [const { None }; LINKS],
             blocks: 0,
