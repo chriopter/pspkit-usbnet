@@ -111,10 +111,10 @@ else                            { /* not there (0), or why it could not look (< 
 <details>
 <summary><b>Tested</b></summary>
 
-- PSP-1000, 6.60 + ARK, Linux gateway
+- PSP-1000 and PSP Go, 6.60 + ARK, Linux gateway
 - From the XMB: connection made from the scan, connection test, a DNS server set by hand
 - SOCOM: Fireteam Bravo 2 online (PSRewired): a round played
-- PSPDX: catalog and installs
+- PSPDX: first start over the cable, catalog and installs (PSP-1000 and PSP Go)
 - Beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
 - Untested: a real PSP Street, Windows, macOS
 
