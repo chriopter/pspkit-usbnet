@@ -1,7 +1,7 @@
 {
   "schema": "https://chriopter.github.io/pspdx/schema/pspdx-v1.json",
   "source": "https://github.com/chriopter/pspkit-usbnet",
-  "name": "pspkit-usbnet",
+  "name": "USBNet",
   "type": "plugin",
   "category": "plugin",
   "tags": [
