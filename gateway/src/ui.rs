@@ -13,7 +13,7 @@ use crate::status::{Event, Status};
 use crate::usb::LINKS;
 use std::io::{IsTerminal, Write};
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const NETWORK: usize = 0;
@@ -79,8 +79,42 @@ fn fit(text: &str, room: usize) -> String {
     cut
 }
 
+/// Whether lines can be rewritten in place and painted: stdout is a terminal
+/// that understands escape codes. Asked once.
+fn terminal() -> bool {
+    static IS: OnceLock<bool> = OnceLock::new();
+    *IS.get_or_init(|| std::io::stdout().is_terminal() && escapes())
+}
+
+/// Windows' classic console window prints escape codes as they are until it
+/// is told to read them. Where it cannot (before Windows 10), the screen is
+/// plain lines, as into a file.
+#[cfg(windows)]
+fn escapes() -> bool {
+    use std::ffi::c_void;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 4;
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn GetConsoleMode(console: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(console: *mut c_void, mode: u32) -> i32;
+    }
+    unsafe {
+        let console = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut mode = 0;
+        GetConsoleMode(console, &mut mode) != 0
+            && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
+                || SetConsoleMode(console, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0)
+    }
+}
+
+#[cfg(not(windows))]
+fn escapes() -> bool {
+    true
+}
+
 fn paint(code: &str, text: &str) -> String {
-    let plain = !std::io::stdout().is_terminal() || std::env::var_os("NO_COLOR").is_some();
+    let plain = !terminal() || std::env::var_os("NO_COLOR").is_some();
     if plain { text.to_string() } else { format!("\x1b[{code}m{text}\x1b[0m") }
 }
 
@@ -122,7 +156,7 @@ impl Screen {
             return;
         }
         let mut out = std::io::stdout().lock();
-        let tty = out.is_terminal();
+        let tty = terminal();
         if self.open && tty {
             let _ = write!(out, "\r\x1b[2K");
         }
@@ -210,7 +244,7 @@ impl Screen {
         for i in 0..self.steps.len() {
             self.step_line(i);
         }
-        if self.present() > 1 && std::io::stdout().is_terminal() {
+        if self.present() > 1 && terminal() {
             self.draw_blocks();
         } else {
             self.traffic_line();
@@ -276,7 +310,7 @@ impl Screen {
             Event::Traffic { down, up, connections } => {
                 let now = Instant::now();
                 let soon = self.drawn.is_some_and(|t| now < t + Duration::from_millis(500));
-                if !self.connected() || soon || !std::io::stdout().is_terminal() {
+                if !self.connected() || soon || !terminal() {
                     return;
                 }
                 self.traffic = Some(traffic(down, up, connections));
@@ -289,7 +323,7 @@ impl Screen {
     /// More than one PSP, before or after this event: the blocks. `gone`:
     /// the PSP that this event took away.
     fn several(&mut self, link: usize, event: Event, gone: Option<Psp>, was: usize, now: usize) {
-        let tty = std::io::stdout().is_terminal();
+        let tty = terminal();
         if was == 1 || now == 1 {
             if was == 1 {
                 // The second PSP: the steps of the first give way to its block.

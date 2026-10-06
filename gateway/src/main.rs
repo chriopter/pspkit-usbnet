@@ -77,7 +77,14 @@ fn main() -> ExitCode {
             "--stats" => cfg.stats_interval = Some(Duration::from_secs(10)),
             "--ping" => ping = true,
             "-h" | "--help" => {
-                print!("{HELP}");
+                let help = HELP;
+                // Windows has no resolv.conf and no signals.
+                #[cfg(windows)]
+                let help = help
+                    .replace("DNS to this computer's resolver and", "DNS to 1.1.1.1 (or --dns) and")
+                    .replace("this computer's (/etc/resolv.conf, else 1.1.1.1)", "1.1.1.1 (this computer's is not looked up)")
+                    .replace("it ends by signal (SIGINT,\n  SIGTERM), with the shell's usual 130 or 143.", "it ends with Ctrl+C or with\n  its window.");
+                print!("{help}");
                 return ExitCode::SUCCESS;
             }
             "-V" | "--version" => {
