@@ -8,9 +8,7 @@
 - 🛠️ For developers: runs **beside PSPLink** on the same cable
 - ✅ Works on the **PSP Street** (E1000)
 
-| PSP | Gateway for Linux, macOS and Windows |
-|---|---|
-| <img src="assets/hi-speed-usb.png" width="400" alt="The PSP's connection list with Hi-Speed USB"> | <img src="assets/gateway.png" width="400" alt="The gateway with a PSP connected"> |
+<img src="assets/connecting.webp" width="900" alt="Real footage: a PSP-1004 connects over Hi-Speed USB (Sony's connection screens, then PSPDX loads its catalog), beside the gateway's terminal on Linux and on Windows, in step: PSP found, Connected 10.77.0.2, then the traffic">
 
 ## 🚀 Get started
 
