@@ -70,7 +70,7 @@ The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would a
 <summary><b>Notes</b></summary>
 
 - Linux: the gateway needs root for USB and asks for your password itself (sudo); a udev rule for `054c:01c9` does without it
-- Windows: install the WinUSB driver once with [Zadig](https://zadig.akeo.ie): Options > List All Devices, pick the PSP's entry "(Interface 1)" beside PSPLink (the single entry without PSPLink), then WinUSB
+- Windows: the gateway installs the USB driver itself at the first start, Windows asks once for permission (by hand: WinUSB with [Zadig](https://zadig.akeo.ie))
 - The PC is a gateway with NAT, like a home router
 - One gateway serves up to four PSPs at once, each on its own cable
 - DNS is the PC's; `--dns IP` picks another server, or set one in the connection on the PSP
@@ -116,8 +116,8 @@ else                            { /* not there (0), or why it could not look (< 
 - SOCOM: Fireteam Bravo 2 online (PSRewired): a round played
 - PSPDX: first start over the cable, catalog and installs (PSP-1000 and PSP Go)
 - Beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
-- Windows gateway: Windows 11 in a VM with the PSP-1000 passed through: 20 of 20 downloads intact at 4.7 MB/s
-- Untested: a real PSP Street, Windows on real hardware, macOS, two PSPs at once
+- Windows gateway: Windows 11 in a VM with the PSP-1000 passed through: the gateway installed the driver itself (PSP alone or beside PSPLink, either one first), 20 of 20 downloads intact at 4.6 MB/s, found again after a power cycle
+- Untested: a real PSP Street, Windows on real hardware, Windows 10, macOS, two PSPs at once
 
 </details>
 

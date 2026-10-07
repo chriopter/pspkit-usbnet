@@ -1,6 +1,6 @@
 [package]
 name = "pspkit-usbnetd"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 description = "User-mode gateway (ARP, DHCP, DNS, TCP/UDP NAT) for Ethernet over the PSP's USB cable"
 license = "MIT"

@@ -297,6 +297,10 @@ impl UsbConn {
                 _claim: Claim { bus: bus.clone(), place },
             });
         }
+        // A PSP alone on the bus without a driver is not in libusb's list.
+        if result == OpenError::Absent && crate::access::driverless() {
+            result = OpenError::Denied;
+        }
         Err(result)
     }
 
