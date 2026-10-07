@@ -20,7 +20,7 @@
 
 Linux
 ```sh
-curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64 && chmod +x pspkit-usbnetd && sudo ./pspkit-usbnetd
+curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64 && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
 ```
 
 macOS
@@ -69,7 +69,7 @@ The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would a
 <details>
 <summary><b>Notes</b></summary>
 
-- Linux: `sudo` is for the access to USB; a udev rule for `054c:01c9` does without it
+- Linux: the gateway needs root for USB and asks for your password itself (sudo); a udev rule for `054c:01c9` does without it
 - Windows: install the WinUSB driver once with [Zadig](https://zadig.akeo.ie): Options > List All Devices, pick the PSP's entry "(Interface 1)" beside PSPLink (the single entry without PSPLink), then WinUSB
 - The PC is a gateway with NAT, like a home router
 - One gateway serves up to four PSPs at once, each on its own cable

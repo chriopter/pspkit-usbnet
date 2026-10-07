@@ -528,7 +528,12 @@ impl UsbLink {
                         OpenError::Failed(_) => Event::Broken,
                         _ => Event::Waiting,
                     });
+                    let denied = e == OpenError::Denied;
                     *last = Some(e);
+                    drop(last);
+                    if denied {
+                        crate::access::elevate();
+                    }
                 }
                 None
             }
