@@ -22,11 +22,3 @@ For captures use the reviewed userspace framebuffer reader in the devbook,
 not PSPLink's `scrshot` or unreviewed RemoteJoy video patches. Native utility
 dialogs should be tested with normal console input, without adding controller
 hooks solely to avoid a button press.
-
-Session exception, 2026-10-15: the user explicitly approved the bounded
-controller helper for the requested XMB/PSPDX recording after the automatic
-review rejection was explained. Keep it bench-only and resident while its
-hooks are active. This does not authorize resets, power cycles or firmware
-writes. The user also approved pushing prepare-1.0 to the public origin and
-starting its native platform checks; release publication remains conditional
-on the completed hardware verification and recording.

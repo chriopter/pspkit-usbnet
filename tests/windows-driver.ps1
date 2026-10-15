@@ -38,3 +38,6 @@ try {
 } finally {
     Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
 }
+
+# The intentional failing child process must not become the CI step exit code.
+$global:LASTEXITCODE = 0

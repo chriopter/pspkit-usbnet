@@ -1,5 +1,4 @@
-command.bin
-frames.raw
+*.raw
 *.jsonl
 __pycache__/
 *.log

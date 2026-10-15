@@ -10,7 +10,10 @@
 - 🛠️ For developers: runs **beside PSPLink** on the same cable
 - ✅ Works on the **PSP Street** (E1000)
 
-<img src="assets/connecting-psp.webp" width="900" alt="Real PSP-1004 footage: connect through Sony's Hi-Speed USB dialog, then load the PSPDX catalog">
+<img src="assets/connecting-psp.webp" width="900" alt="PSP Street: connect using the original XMB network settings and run the connection test">
+
+[Watch the PSP Street XMB recording](assets/connecting-psp.mp4).
+The smaller CLI recordings below show the previous 0.1.10 interface.
 
 <table>
 <tr><th>Windows</th><th>Linux</th></tr>
@@ -154,7 +157,7 @@ else                            { /* not there (0), or why it could not look (< 
 <details>
 <summary><b>Tested</b></summary>
 
-The current 1.0 verification and outstanding checks are recorded in
+The scope and results of the 1.0 verification are recorded in
 [`tests/release-1.0.md`](tests/release-1.0.md). Historical hardware results
 below do not replace testing the current binaries.
 
@@ -167,7 +170,8 @@ below do not replace testing the current binaries.
 - PSPDX: first start over the cable, catalog and installs (PSP-1000 and PSP Go)
 - Earlier releases beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
 - Windows gateway 0.1.10: Windows 11 in a VM with the PSP-1000 passed through: the gateway installed the driver itself (PSP alone or beside PSPLink, either one first), 20 of 20 downloads intact at 4.6 MB/s, found again after a power cycle
-- Untested: Windows on real hardware, Windows 10, macOS, two PSPs at once
+- Native CI executes the release binaries on Linux x86_64/ARM64, Windows x86_64 and macOS Intel/Apple Silicon. USB hardware availability differs by runner.
+- Not hardware-tested for 1.0: Windows USB binding, macOS USB connections, Windows 10 and two PSPs at once.
 
 </details>
 

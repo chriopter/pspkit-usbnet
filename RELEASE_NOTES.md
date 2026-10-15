@@ -17,3 +17,9 @@ keep the gateway running on your computer.
 See the README for downloads, setup, real hardware footage and the scope of
 the recorded verification. Linux may need USB permission through sudo;
 Windows may need the gateway's WinUSB setup on first use.
+
+Verified on a PSP Street with the Linux gateway, including the original
+XMB connection menu and PSPLink access. Native CI checks the standalone
+binaries on all five OS/architecture targets. Physical USB testing on
+macOS and Windows 1.0 remains outstanding; see the verification record
+for the full scope.

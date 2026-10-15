@@ -137,7 +137,8 @@ fn main() -> ExitCode {
     }
     let bus = Arc::new(bus.unwrap_or_default());
     if !bus.usable() {
-        eprintln!("pspkit-usbnetd: USB initialization failed; see the libusb error above");
+        log::show(true);
+        eprintln!("pspkit-usbnetd: USB initialization failed; check that this system exposes a USB bus");
         return ExitCode::from(1);
     }
     logln!(

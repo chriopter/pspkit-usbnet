@@ -1,6 +1,6 @@
 /* Bounded recording using the reviewed safe-shot userspace reader.
  * Static owned RAM; read-only VRAM access; no display hooks or GU calls.
- * Complete frame header and pixels are written together to host0.
+ * Complete frame header and pixels are written together to the Memory Stick.
  * Explicit thread exit avoids the SDK CRT's automatic ExitGame. */
 #include <pspkernel.h>
 #include <pspdisplay.h>
@@ -20,10 +20,10 @@ static int write_all(int fd, const void *data, int len)
 }
 int main(int argc, char **argv)
 {
-    unsigned start = sceKernelGetSystemTimeLow(), limit = 60000000;
+    unsigned start = sceKernelGetSystemTimeLow(), limit = 180000000;
     int fd;
     if (argc > 1) { int seconds = atoi(argv[1]); if (seconds > 0 && seconds <= 180) limit = seconds * 1000000u; }
-    fd = sceIoOpen("host0:/tests/capture/frames.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0600);
+    fd = sceIoOpen("ms0:/PSP/usbnet-capture.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0600);
     if (fd >= 0) {
         while ((unsigned)(sceKernelGetSystemTimeLow() - start) < limit) {
             void *top = NULL; int stride = 0, format = -1;
@@ -36,7 +36,7 @@ int main(int argc, char **argv)
                 if (write_all(fd, &frame, 16 + len) < 0) break;
             }
             at = sceKernelGetSystemTimeLow() - at;
-            if (at < 100000) sceKernelDelayThread(100000 - at);
+            if (at < 200000) sceKernelDelayThread(200000 - at);
         }
         sceIoClose(fd);
     }
