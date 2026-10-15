@@ -21,7 +21,7 @@ const USB: usize = 1;
 const PSP: usize = 2;
 const CONNECTION: usize = 3;
 const WAITING: &str = "waiting: choose \"Hi-Speed USB\" on the PSP";
-const FOUND: &str = "found, handing out an address";
+const FOUND: &str = "USB ready; waiting for the PSP to request an IP address";
 /// The width a step's name is written in.
 const NAME: usize = 11;
 
@@ -83,7 +83,11 @@ fn fit(text: &str, room: usize) -> String {
 /// that understands escape codes. Asked once.
 fn terminal() -> bool {
     static IS: OnceLock<bool> = OnceLock::new();
-    *IS.get_or_init(|| std::io::stdout().is_terminal() && escapes())
+    *IS.get_or_init(|| {
+        std::io::stdout().is_terminal()
+            && std::env::var_os("TERM").as_deref() != Some(std::ffi::OsStr::new("dumb"))
+            && escapes()
+    })
 }
 
 /// Windows' classic console window prints escape codes as they are until it
@@ -264,8 +268,8 @@ impl Screen {
             }
             Event::Lost => gone = self.psps[link].take(),
             // While a PSP is there, the search for a further one is not shown.
-            Event::Waiting | Event::Busy | Event::NoAccess | Event::Broken if was > 0 => return,
-            Event::Waiting | Event::Busy | Event::NoAccess | Event::Broken => {}
+            Event::Waiting | Event::NoInterface | Event::Busy | Event::NoAccess | Event::Broken if was > 0 => return,
+            Event::Waiting | Event::NoInterface | Event::Busy | Event::NoAccess | Event::Broken => {}
             // A gateway also tells the totals of a PSP that has left.
             Event::Connected(ip) => match &mut self.psps[link] {
                 Some(p) => p.ip = Some(*ip),
@@ -288,6 +292,7 @@ impl Screen {
     fn one(&mut self, event: Event) {
         match event {
             Event::Waiting => self.set(PSP, "PSP", Mark::Pending, WAITING),
+            Event::NoInterface => self.set(PSP, "PSP", Mark::Pending, "PSP found; enable usbnet.prx and choose Hi-Speed USB"),
             Event::Busy => self.set(PSP, "PSP", Mark::Pending, "found, but another program is using it"),
             Event::NoAccess => self.set(PSP, "PSP", Mark::Pending, crate::access::STEP),
             Event::Broken => self.set(PSP, "PSP", Mark::Pending, "found, but it cannot be opened: see the event log (Enter)"),

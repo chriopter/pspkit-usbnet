@@ -20,7 +20,6 @@ use rusb::{Direction, TransferType, UsbContext};
 use std::fmt;
 use std::io;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -38,12 +37,63 @@ const QUEUE_LIMIT: usize = 256 * 1024;
 
 /// What `send` and the writer thread share.
 struct Tx {
-    queue: Mutex<VecDeque<Vec<u8>>>,
-    queued: Mutex<usize>,
+    state: Mutex<TxState>,
     wake: Condvar,
     room: Condvar,
-    failed: AtomicBool,
-    stop: AtomicBool,
+}
+#[derive(Default)]
+struct TxState {
+    queue: VecDeque<Vec<u8>>,
+    queued: usize,
+    stopped: bool,
+}
+
+impl Tx {
+    fn new() -> Self {
+        Self { state: Mutex::new(TxState::default()), wake: Condvar::new(), room: Condvar::new() }
+    }
+
+    fn stop(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.stopped = true;
+        state.queue.clear();
+        state.queued = 0;
+        self.wake.notify_all();
+        self.room.notify_all();
+    }
+
+    fn enqueue(&self, frame: &[u8]) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        while !state.stopped && state.queued + frame.len() > QUEUE_LIMIT {
+            state = self.room.wait(state).unwrap();
+        }
+        if state.stopped {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "USB connection closed"));
+        }
+        state.queued += frame.len();
+        state.queue.push_back(frame.to_vec());
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    fn next_batch(&self, batch: &mut Vec<u8>) -> bool {
+        let mut state = self.state.lock().unwrap();
+        while !state.stopped && state.queue.is_empty() {
+            state = self.wake.wait(state).unwrap();
+        }
+        if state.stopped { return false; }
+        batch.clear();
+        while let Some(frame) = state.queue.front() {
+            if batch.len() + 2 + frame.len() > BATCH - 4 { break; }
+            batch.extend_from_slice(&(frame.len() as u16).to_le_bytes());
+            batch.extend_from_slice(frame);
+            let len = frame.len();
+            state.queued -= len;
+            state.queue.pop_front();
+        }
+        self.room.notify_all();
+        true
+    }
 }
 const RETRY: Duration = Duration::from_secs(1);
 
@@ -194,6 +244,7 @@ fn usbnet_interface(dev: &rusb::Device<rusb::Context>) -> Option<Found> {
 pub struct UsbConn {
     handle: Arc<rusb::DeviceHandle<rusb::Context>>,
     tx: Arc<Tx>,
+    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Frames of a received transfer not handed out yet.
     rx: Mutex<VecDeque<Vec<u8>>>,
     interface: u8,
@@ -270,22 +321,16 @@ impl UsbConn {
             let label = label(told.as_deref().and_then(model), &taken);
             held.push((place.clone(), label.clone()));
             let handle = Arc::new(handle);
-            let tx = Arc::new(Tx {
-                queue: Mutex::new(VecDeque::new()),
-                queued: Mutex::new(0),
-                wake: Condvar::new(),
-                room: Condvar::new(),
-                failed: AtomicBool::new(false),
-                stop: AtomicBool::new(false),
-            });
-            {
+            let tx = Arc::new(Tx::new());
+            let writer = {
                 let (handle, tx) = (handle.clone(), tx.clone());
                 let (ep_out, max_packet) = (found.ep_out, found.max_packet);
-                std::thread::spawn(move || writer(&handle, &tx, ep_out, max_packet));
-            }
+                std::thread::spawn(move || writer(&handle, &tx, ep_out, max_packet))
+            };
             return Ok(UsbConn {
                 handle,
                 tx,
+                writer: Mutex::new(Some(writer)),
                 rx: Mutex::new(VecDeque::new()),
                 interface: found.interface,
                 ep_in: found.ep_in,
@@ -306,8 +351,12 @@ impl UsbConn {
 
     /// Gives the interface up now, whoever still holds this connection.
     pub fn invalidate(&self) {
-        self.tx.stop.store(true, Ordering::SeqCst);
-        self.tx.wake.notify_all();
+        self.tx.stop();
+        // No writer may use the interface after it is released or reclaimed.
+        // An in-flight bulk write has the bounded WRITE_TIMEOUT above.
+        if let Some(writer) = self.writer.lock().unwrap().take() {
+            let _ = writer.join();
+        }
         let _ = self.handle.release_interface(self.interface);
     }
 
@@ -330,9 +379,7 @@ impl UsbConn {
 
 impl Drop for UsbConn {
     fn drop(&mut self) {
-        self.tx.stop.store(true, Ordering::SeqCst);
-        self.tx.wake.notify_all();
-        let _ = self.handle.release_interface(self.interface);
+        self.invalidate();
     }
 }
 
@@ -344,28 +391,7 @@ fn writer(handle: &rusb::DeviceHandle<rusb::Context>, tx: &Tx, ep_out: u8, max_p
     let debug = std::env::var_os("USBNET_DEBUG").is_some();
     let (mut transfers, mut bytes, mut busy, mut since) = (0usize, 0usize, Duration::ZERO, Instant::now());
     loop {
-        batch.clear();
-        {
-            let mut q = tx.queue.lock().unwrap();
-            while q.is_empty() {
-                if tx.stop.load(Ordering::SeqCst) {
-                    return;
-                }
-                q = tx.wake.wait(q).unwrap();
-            }
-            let mut taken = 0;
-            while let Some(f) = q.front() {
-                if batch.len() + 2 + f.len() > BATCH - 4 {
-                    break;
-                }
-                batch.extend_from_slice(&(f.len() as u16).to_le_bytes());
-                batch.extend_from_slice(f);
-                taken += f.len();
-                q.pop_front();
-            }
-            *tx.queued.lock().unwrap() -= taken;
-        }
-        tx.room.notify_all();
+        if !tx.next_batch(&mut batch) { return; }
         // A transfer ends with a short packet.
         if batch.len() % max_packet == 0 {
             batch.extend_from_slice(&[0, 0]);
@@ -394,8 +420,7 @@ fn writer(handle: &rusb::DeviceHandle<rusb::Context>, tx: &Tx, ep_out: u8, max_p
         match result {
             Ok(n) if n == batch.len() => {}
             _ => {
-                tx.failed.store(true, Ordering::SeqCst);
-                tx.room.notify_all();
+                tx.stop();
                 return;
             }
         }
@@ -443,25 +468,10 @@ impl FrameDevice for UsbConn {
     }
 
     fn send(&self, frame: &[u8]) -> io::Result<()> {
-        let broken = || io::Error::new(io::ErrorKind::BrokenPipe, "USB write failed");
         if frame.is_empty() || frame.len() > 1600 {
             return Ok(());
         }
-        let mut queued = self.tx.queued.lock().unwrap();
-        while *queued > QUEUE_LIMIT {
-            if self.tx.failed.load(Ordering::SeqCst) {
-                return Err(broken());
-            }
-            queued = self.tx.room.wait_timeout(queued, WRITE_TIMEOUT).unwrap().0;
-        }
-        if self.tx.failed.load(Ordering::SeqCst) {
-            return Err(broken());
-        }
-        *queued += frame.len();
-        drop(queued);
-        self.tx.queue.lock().unwrap().push_back(frame.to_vec());
-        self.tx.wake.notify_one();
-        Ok(())
+        self.tx.enqueue(frame)
     }
 }
 
@@ -530,6 +540,7 @@ impl UsbLink {
                         OpenError::Busy => Event::Busy,
                         OpenError::Denied => Event::NoAccess,
                         OpenError::Failed(_) => Event::Broken,
+                        OpenError::NoInterface => Event::NoInterface,
                         _ => Event::Waiting,
                     });
                     let denied = e == OpenError::Denied;
@@ -604,6 +615,60 @@ impl FrameDevice for UsbLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnect_wakes_a_sender_waiting_for_queue_space() {
+        let tx = Arc::new(Tx::new());
+        let frame = vec![0x42; 1600];
+        for _ in 0..QUEUE_LIMIT / frame.len() { tx.enqueue(&frame).unwrap(); }
+        let (done, result) = std::sync::mpsc::channel();
+        let sender = tx.clone();
+        let thread = std::thread::spawn(move || { done.send(sender.enqueue(&frame)).unwrap(); });
+        assert!(result.recv_timeout(Duration::from_millis(30)).is_err());
+        tx.stop();
+        assert_eq!(result.recv_timeout(Duration::from_secs(1)).unwrap().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        thread.join().unwrap();
+        assert_eq!(tx.state.lock().unwrap().queued, 0);
+    }
+
+    #[test]
+    fn disconnect_wakes_an_idle_writer_and_discards_pending_frames() {
+        let tx = Arc::new(Tx::new());
+        let (done, result) = std::sync::mpsc::channel();
+        let reader = tx.clone();
+        let thread = std::thread::spawn(move || {
+            done.send(reader.next_batch(&mut Vec::new())).unwrap();
+        });
+        tx.stop();
+        assert!(!result.recv_timeout(Duration::from_secs(1)).unwrap());
+        thread.join().unwrap();
+        let tx = Tx::new();
+        tx.enqueue(&[1, 2, 3]).unwrap();
+        tx.stop();
+        assert!(!tx.next_batch(&mut Vec::new()));
+        assert_eq!(tx.enqueue(&[4]).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn batches_keep_frame_boundaries_and_queue_accounting() {
+        let tx = Tx::new();
+        let frames: Vec<_> = (0..20).map(|n| vec![n; 1500]).collect();
+        for frame in &frames { tx.enqueue(frame).unwrap(); }
+        let mut received = Vec::new();
+        let mut batch = Vec::new();
+        for _ in 0..2 {
+            assert!(tx.next_batch(&mut batch));
+            assert!(batch.len() <= BATCH - 4);
+            let mut bytes = &batch[..];
+            while !bytes.is_empty() {
+                let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+                received.push(bytes[2..2 + len].to_vec());
+                bytes = &bytes[2 + len..];
+            }
+        }
+        assert_eq!(received, frames);
+        assert_eq!(tx.state.lock().unwrap().queued, 0);
+    }
 
     #[test]
     fn the_model_is_what_the_plugin_says() {

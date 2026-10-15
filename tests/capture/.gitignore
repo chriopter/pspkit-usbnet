@@ -1,0 +1,4 @@
+command.bin
+frames.raw
+*.jsonl
+__pycache__/

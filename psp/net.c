@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "usbnet.h"
+#include "xmb.h"
 
 #define USB_SSID "Hi-Speed USB" /* as a scan lists it */
 
@@ -652,10 +653,14 @@ static int (*next_start_handler)(SceModule *);
 
 static int on_module_start(SceModule *module)
 {
+    int result;
+
     trace('m', *(u32 *)module->modname, *(u32 *)(module->modname + 4), *(u32 *)(module->modname + 8));
     if (!strcmp(module->modname, IFHANDLE))
         ifhandle_arrived();
-    return next_start_handler ? next_start_handler(module) : 0;
+    result = next_start_handler ? next_start_handler(module) : 0;
+    xmb_module_start(module);
+    return result;
 }
 
 /* Loaded twice (as a plugin, and again by an application): the second
@@ -706,6 +711,7 @@ void net_stop(void)
     int i, k, ifhandle_there = ifh.lookup && ifh_find(0x9CBA24D4) == (u32)ifh.lookup;
 
     sctrlHENSetStartModuleHandler(next_start_handler);
+    xmb_stop();
     trace_stop();
     if (own && ifhandle_there)
         own_detach();

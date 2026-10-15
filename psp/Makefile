@@ -1,5 +1,5 @@
 TARGET = usbnet
-OBJS = usbnet.o net.o exports.o
+OBJS = usbnet.o net.o xmb.o exports.o
 
 USE_KERNEL_LIBS = 1
 # As PSPLink builds its modules: the CFW resolves the SDK's kernel NIDs

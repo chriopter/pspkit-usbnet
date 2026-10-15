@@ -12,8 +12,8 @@ pub const STEP: &str = "found, but Windows has no driver for it";
 #[cfg(not(windows))]
 pub const STEP: &str = "found, but no access to USB: start with sudo";
 
-/// On Linux and macOS the PSP on USB is root's unless a udev rule says
-/// otherwise. Rather than send the user away to type sudo, the gateway
+/// When Unix USB access is denied (on Linux, typically a missing udev rule),
+/// rather than send the user away to type sudo, the gateway
 /// starts itself again under it, once: sudo asks for the password on this
 /// terminal. Returns when that is not possible (no terminal, no sudo, root
 /// already); then the words above stand.
@@ -112,33 +112,62 @@ pub fn driverless() -> bool {
 /// Runs `DRIVER_PS1` as administrator and waits for it.
 #[cfg(windows)]
 fn install_driver() -> Result<(), String> {
+    use std::io::Write;
     use std::process::Command;
     // By its full path: what runs as administrator is not looked up in PATH.
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     let powershell = std::path::Path::new(&root).join("System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-    let script = std::env::temp_dir().join("pspkit-usbnet-driver.ps1");
-    std::fs::write(&script, DRIVER_PS1).map_err(|e| format!("{}: {e}", script.display()))?;
+    // Never elevate a predictable shared temporary filename. Atomically
+    // reserve a fresh directory before creating the script inside it.
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let directory = (0..128).find_map(|attempt| {
+        let path = std::env::temp_dir().join(format!("pspkit-usbnet-{}-{stamp}-{attempt}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => Some(Ok(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+            Err(e) => Some(Err(e.to_string())),
+        }
+    }).ok_or("cannot reserve a temporary installer directory")??;
+    let script = directory.join("driver.ps1");
+    let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&script)
+        .and_then(|mut file| file.write_all(DRIVER_PS1.as_bytes()));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&script);
+        let _ = std::fs::remove_dir(&directory);
+        return Err(format!("{}: {e}", script.display()));
+    }
     // Start-Process -Verb RunAs is what brings Windows' question. The paths
     // go through the environment: no quoting can spoil them.
     const ASK: &str = "try { $p = Start-Process -FilePath $env:PSPKIT_POWERSHELL -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
         -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File \"{0}\"' -f $env:PSPKIT_SCRIPT); exit $p.ExitCode } catch { exit 1223 }";
-    let status = Command::new(&powershell)
+    let result = Command::new(&powershell)
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ASK])
         .env("PSPKIT_POWERSHELL", &powershell)
         .env("PSPKIT_SCRIPT", &script)
         .stdin(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("PowerShell did not start: {e}"))?;
+        .status();
     // The script writes down what it did, beside itself.
     let log = script.with_extension("log");
     let _ = std::fs::remove_file(&script);
+    let status = match result {
+        Ok(status) => status,
+        Err(e) => {
+            let _ = std::fs::remove_dir(&directory);
+            return Err(format!("PowerShell did not start: {e}"));
+        }
+    };
     match status.code() {
         Some(0) => {
             let _ = std::fs::remove_file(&log);
+            let _ = std::fs::remove_dir(&directory);
             Ok(())
         }
         // ERROR_CANCELLED: the question was answered with No.
-        Some(1223) => Err("permission was not given".into()),
+        Some(1223) => {
+            let _ = std::fs::remove_dir(&directory);
+            Err("permission was not given".into())
+        }
         _ => Err(format!("see {}", log.display())),
     }
 }
@@ -160,12 +189,11 @@ const DRIVER_PS1: &str = r#"# pspkit-usbnetd: installs the WinUSB driver for the
 $ErrorActionPreference = 'Stop'
 $log = [IO.Path]::ChangeExtension($PSCommandPath, 'log')
 $subject = 'CN=pspkit-usbnet driver (made on this computer)'
-$dir = Join-Path $env:SystemRoot 'Temp\pspkit-usbnet-driver'
+$dir = Join-Path ([IO.Path]::GetTempPath()) ('pspkit-usbnet-' + [Guid]::NewGuid().ToString('N'))
 $pnputil = Join-Path $env:SystemRoot 'System32\pnputil.exe'
 try {
     "$(Get-Date -Format o) start" | Set-Content $log
-    Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $dir | Out-Null
+    New-Item -ItemType Directory $dir | Out-Null
     @"
 ; WinUSB for the usbnet interface of a PSP running usbnet.prx (pspkit-usbnet).
 [Version]
@@ -210,15 +238,8 @@ Provider = "pspkit-usbnet"
 Name     = "PSP network over USB (usbnet)"
 "@ | Set-Content -Encoding ASCII "$dir\pspusbnet.inf"
 
-    # An earlier one of ours goes first: its package and its certificates.
-    $name = $null
-    foreach ($line in (& $pnputil /enum-drivers)) {
-        if ($line -match '(oem\d+\.inf)') { $name = $Matches[1] }
-        elseif ($line -match 'pspusbnet\.inf' -and $name) { & $pnputil /delete-driver $name /uninstall | Add-Content $log; $name = $null }
-    }
-    foreach ($s in 'Root', 'TrustedPublisher', 'My') {
-        Get-ChildItem "Cert:\LocalMachine\$s" | Where-Object Subject -eq $subject | Remove-Item
-    }
+    # Retain existing packages and trust entries. A failed installation must
+    # not uninstall a working driver or invalidate another PSP's package.
 
     $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\LocalMachine\My -NotAfter (Get-Date).AddYears(20) -HashAlgorithm SHA256
     $public = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, $cert.RawData)

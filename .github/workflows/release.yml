@@ -13,6 +13,48 @@ permissions:
   contents: write
 
 jobs:
+  native-tests:
+    needs: [gateway]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: gateway-ubuntu-latest
+            binary: pspkit-usbnetd-linux-x86_64
+          - os: ubuntu-24.04-arm
+            artifact: gateway-ubuntu-latest
+            binary: pspkit-usbnetd-linux-aarch64
+          - os: windows-latest
+            artifact: gateway-ubuntu-latest
+            binary: pspkit-usbnetd-windows-x86_64.exe
+          - os: macos-latest
+            artifact: gateway-macos-latest
+            binary: pspkit-usbnetd-macos
+          - os: macos-15-intel
+            artifact: gateway-macos-latest
+            binary: pspkit-usbnetd-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup override set 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: gateway }
+      - run: cargo test --locked --manifest-path gateway/Cargo.toml
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-binaries
+      - name: Actual release binary starts on its platform
+        shell: bash
+        env:
+          RELEASE_BINARY: ${{ matrix.binary }}
+        run: |
+          exe="release-binaries/$RELEASE_BINARY"
+          chmod +x "$exe"
+          "$exe" --version
+          "$exe" --help
+
   gateway:
     strategy:
       fail-fast: false
@@ -21,17 +63,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup override set 1.99.0
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: gateway }
       - name: zig, for the Linux and Windows builds
         if: runner.os == 'Linux'
-        run: pip install --break-system-packages ziglang cargo-zigbuild
-      - run: cargo test --manifest-path gateway/Cargo.toml
+        run: pip install --break-system-packages ziglang==0.14.1 cargo-zigbuild==0.23.4
+      - run: cargo test --locked --manifest-path gateway/Cargo.toml
       - run: ./release.sh
       - name: usbnet.prx, in the pspdev container, and usbnet-psp.zip
         if: runner.os == 'Linux'
         run: |
-          docker run --rm -v "$PWD:/w" -w /w pspdev/pspdev:latest make -C psp
+          docker run --rm -v "$PWD:/w" -w /w pspdev/pspdev@sha256:54895e6f5afb71b8f4f6915ee6d5023e1e087ca7afdf2dcb1d7a694a5233e45f make -C psp
           cp psp/usbnet.prx dist/
           cp assets/icon0.png dist/ICON0.PNG
           zip -j dist/usbnet-psp.zip psp/usbnet.prx dist/ICON0.PNG LICENSE THIRD_PARTY_PSPLINK_LICENSE
@@ -42,11 +85,20 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [gateway]
+    needs: [gateway, native-tests]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - name: Verify version and hardware/video release gate
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path('gateway/Cargo.toml').read_text())['package']['version']
+          assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'tag and binary version must match'
+          assert 'Release-ready: yes' in pathlib.Path('tests/release-1.0.md').read_text().splitlines(), 'hardware and video verification is incomplete'
+          PY
       - uses: actions/download-artifact@v7
         with: { path: out, merge-multiple: true }
-      - run: gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+      - run: gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "USBNet $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
         env:
           GH_TOKEN: ${{ github.token }}

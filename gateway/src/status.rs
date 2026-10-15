@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// No PSP on USB yet, or its interface is not there.
+    /// No PSP on USB yet.
     Waiting,
+    /// PSPLink is visible, but usbnet is not active on its USB device.
+    NoInterface,
     /// The PSP is there, but another program has its interface.
     Busy,
     /// The PSP is there, but this user may not open it.

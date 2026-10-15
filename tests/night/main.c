@@ -313,7 +313,11 @@ int main(int argc, char *argv[])
     }
     if (!profile) {
         say("night: no connection \"%s\"\nnight: finished 0 of %d\n", argc > 1 ? argv[1] : "", rounds);
-        return 0;
+        /* Returning from main calls ExitGame and may reset PSPLink while
+         * usbnet is active. Leave the initialized stack and module resident,
+         * just as the normal completion path below does. */
+        for (;;)
+            sceKernelSleepThread();
     }
     sceNetApctlAddHandler(on_event, NULL);
     for (i = 1; i <= rounds; i++) {
@@ -328,6 +332,7 @@ int main(int argc, char *argv[])
         }
     }
     say("night: finished %d of %d\n", ok, rounds);
-    sceKernelSleepThread();
-    return 0;
+    /* Never fall through to the CRT's ExitGame, even if woken manually. */
+    for (;;)
+        sceKernelSleepThread();
 }

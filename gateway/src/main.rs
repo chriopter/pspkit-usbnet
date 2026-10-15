@@ -7,7 +7,7 @@ use pspkit_usbnetd::logln;
 use pspkit_usbnetd::ui;
 use pspkit_usbnetd::packet::{self, BROADCAST_MAC, ETH_HDR, Mac, mac_str};
 use pspkit_usbnetd::usb::{Bus, LINKS, OpenError, UsbConn, UsbLink};
-use std::io;
+use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -24,7 +24,8 @@ A user-mode gateway for the PSP's usbnet driver (USB 054c:01c9, the interface
 of class 0xfd). It is the whole LAN behind the cable: it answers ARP, is the
 DHCP server (the PSP gets 10.77.0.2/24, router and DNS 10.77.0.1), forwards
 DNS to this computer's resolver and relays the PSP's TCP and UDP through
-ordinary sockets. No TAP/TUN device, no root. 10.77.0.1 itself stands for
+ordinary sockets. No TAP/TUN device. USB access may require permission or
+a driver; the gateway guides you through setup. 10.77.0.1 itself stands for
 this computer: the PSP reaches local services there (as 127.0.0.1).
 
 Up to 4 PSPs are served at once, each on its own cable. Each cable is a LAN
@@ -59,14 +60,29 @@ Exit status:
   SIGTERM), with the shell's usual 130 or 143.
 ";
 
+fn print_text(text: &str) -> ExitCode {
+    match io::stdout().lock().write_all(text.as_bytes()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("pspkit-usbnetd: cannot write output: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let mut cfg = Config::default();
     let mut ping = false;
     let mut verbose = 0;
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--dns" => match args.next().and_then(|a| a.parse::<IpAddr>().ok()) {
+        let Some(arg) = arg.to_str() else {
+            eprintln!("pspkit-usbnetd: arguments must be valid Unicode (see --help)");
+            return ExitCode::from(2);
+        };
+        match arg {
+            "--dns" => match args.next().and_then(|a| a.to_str()?.parse::<IpAddr>().ok()) {
                 Some(ip) => cfg.resolvers.get_or_insert_with(Vec::new).push(SocketAddr::new(ip, 53)),
                 None => {
                     eprintln!("pspkit-usbnetd: --dns needs an IP address");
@@ -84,12 +100,10 @@ fn main() -> ExitCode {
                     .replace("DNS to this computer's resolver and", "DNS to 1.1.1.1 (or --dns) and")
                     .replace("this computer's (/etc/resolv.conf, else 1.1.1.1)", "1.1.1.1 (this computer's is not looked up)")
                     .replace("it ends by signal (SIGINT,\n  SIGTERM), with the shell's usual 130 or 143.", "it ends with Ctrl+C or with\n  its window.");
-                print!("{help}");
-                return ExitCode::SUCCESS;
+                return print_text(&help);
             }
             "-V" | "--version" => {
-                println!("pspkit-usbnetd {}", env!("CARGO_PKG_VERSION"));
-                return ExitCode::SUCCESS;
+                return print_text(&format!("pspkit-usbnetd {}\n", env!("CARGO_PKG_VERSION")));
             }
             other => {
                 eprintln!("pspkit-usbnetd: unknown argument '{other}' (see --help)");
@@ -106,7 +120,11 @@ fn main() -> ExitCode {
             eprintln!("pspkit-usbnetd: another pspkit-usbnetd is already running on this computer; end that one first");
             return ExitCode::from(1);
         }
-        other => other.ok(),
+        Ok(socket) => socket,
+        Err(e) => {
+            eprintln!("pspkit-usbnetd: cannot reserve local gateway port {ONLY_ONE_PORT}: {e}");
+            return ExitCode::from(1);
+        }
     };
     if ping {
         return ping_test(&cfg);
@@ -118,6 +136,10 @@ fn main() -> ExitCode {
         cfg.status = ui::start(env!("CARGO_PKG_VERSION"), || bus.insert(Bus::new()).usable());
     }
     let bus = Arc::new(bus.unwrap_or_default());
+    if !bus.usable() {
+        eprintln!("pspkit-usbnetd: USB initialization failed; see the libusb error above");
+        return ExitCode::from(1);
+    }
     logln!(
         "pspkit-usbnetd {}: gateway {}/{} ({}), client {}",
         env!("CARGO_PKG_VERSION"),

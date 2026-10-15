@@ -1,41 +1,83 @@
 # pspkit-usbnet
 
+<img src="assets/icon.svg" width="288" height="160" alt="USBNet: a glowing USB symbol connected to a globe, the plugin icon shown in PSPDX">
+
 **Bring your PSP online over the USB cable** — up to 10x faster than Wi-Fi & works on the PSP Street!
 
-- 🧩 **One plugin**, no flashing needed, works in **all apps & games**
+- 🧩 **One plugin**, no flashing needed; use the normal connection menu in apps and games
 - ⚡ **Ten times faster** than Wi-Fi (4.8 vs 0.47 MB/s)
-- 💻 **Gateway** for Linux, macOS and Windows: **one file**, nothing to install
+- 💻 **Standalone gateway** for Linux, macOS and Windows
 - 🛠️ For developers: runs **beside PSPLink** on the same cable
 - ✅ Works on the **PSP Street** (E1000)
 
-<img src="assets/connecting.webp" width="900" alt="Real footage: a PSP-1004 connects over Hi-Speed USB (Sony's connection screens, then PSPDX loads its catalog), beside the gateway's terminal on Linux and on Windows, in step: PSP found, Connected 10.77.0.2, then the traffic">
+<img src="assets/connecting-psp.webp" width="900" alt="Real PSP-1004 footage: connect through Sony's Hi-Speed USB dialog, then load the PSPDX catalog">
+
+<table>
+<tr><th>Windows</th><th>Linux</th></tr>
+<tr>
+<td><img src="assets/connecting-windows.webp" width="440" alt="Windows gateway: PSP found, connected at 10.77.0.2, then network traffic"></td>
+<td><img src="assets/connecting-linux.webp" width="440" alt="Linux gateway: PSP found, connected at 10.77.0.2, then network traffic"></td>
+</tr>
+</table>
 
 ## 🚀 Get started
 
 **1. PSP:** put [`usbnet.prx`](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/usbnet.prx) into `ms0:/seplugins/` and enable it
 
-**2. PC:** run the gateway
+**2. PC: run the gateway.** Choose your operating system below. Leave the
+gateway window open and connect your PSP with a USB cable.
 
-Linux
+<details>
+<summary><b>Windows</b></summary>
+
+[Download for Windows](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-windows-x86_64.exe),
+then double-click the downloaded `.exe`.
+
+If a USB driver is needed, the gateway offers to install it. Windows asks
+for permission; the gateway explains the local driver certificate first.
+
+</details>
+
+<details>
+<summary><b>macOS — Apple Silicon & Intel</b></summary>
+
+[Download for macOS](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-macos).
+Open Terminal in the download folder and run:
+
 ```sh
-curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64 && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
+chmod +x pspkit-usbnetd-macos
+./pspkit-usbnetd-macos
 ```
 
-macOS
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+[Download for Intel / AMD (x86_64)](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64)
+or [ARM64](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-aarch64).
+Open a terminal in the download folder and run:
+
 ```sh
-curl -Lo pspkit-usbnetd https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-macos && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
+chmod +x pspkit-usbnetd-linux-x86_64
+./pspkit-usbnetd-linux-x86_64
 ```
 
-Windows
-```sh
-curl.exe -Lo pspkit-usbnetd.exe https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-windows-x86_64.exe && pspkit-usbnetd.exe
-```
+For ARM64, replace `x86_64` with `aarch64` in both commands.
+If USB access needs permission, the gateway asks for your password through
+`sudo`.
+
+</details>
 
 **3. PSP, once:** create the connection
 
 Network Settings → Infrastructure Mode → New Connection → Scan → "Hi-Speed USB" → Security: None → save
 
 **4. PSP:** connect with "Hi-Speed USB", like with Wi-Fi
+
+The gateway shows **Connected · 10.77.0.2** once the PSP has its IP address.
+In PSPDX, a successful gateway search means the PC is reachable; select the
+saved **Hi-Speed USB** connection to go online.
 
 ## ⚙️ How it works
 
@@ -110,12 +152,13 @@ else                            { /* not there (0), or why it could not look (< 
 <summary><b>Tested</b></summary>
 
 - PSP-1000 and PSP Go, 6.60 + ARK, Linux gateway
+- PSP Street (E1000), ARK + PSPLink, Linux gateway: saved USB profile, DHCP, 10 MiB download with matching checksum, five short TCP requests, twenty UDP echoes, DNS and an internet HTTP request (200 OK). The original game-side infrastructure chooser lists the profile and connects successfully (result 0, IP 10.77.0.2). Plugin installed, enabled and automatically loaded after a manual boot.
 - From the XMB: connection made from the scan, connection test, a DNS server set by hand
 - SOCOM: Fireteam Bravo 2 online (PSRewired): a round played
 - PSPDX: first start over the cable, catalog and installs (PSP-1000 and PSP Go)
 - Beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
 - Windows gateway: Windows 11 in a VM with the PSP-1000 passed through: the gateway installed the driver itself (PSP alone or beside PSPLink, either one first), 20 of 20 downloads intact at 4.6 MB/s, found again after a power cycle
-- Untested: a real PSP Street, Windows on real hardware, Windows 10, macOS, two PSPs at once
+- Untested: Windows on real hardware, Windows 10, macOS, two PSPs at once
 
 </details>
 
@@ -133,6 +176,11 @@ cargo build --release --manifest-path gateway/Cargo.toml
 | `psp/` | the plugin |
 | `gateway/` | the gateway, `pspkit-usbnetd` |
 | `tests/` | test program and soak scripts |
+
+Street XMB menu work: [`tests/xmb-menu.md`](tests/xmb-menu.md) documents the
+guarded RAM change that enables the original Network Settings item. PC-tested
+against the 6.61 menu layout; the original entry and its icon are confirmed
+visible on a real Street after a normal firmware return to the XMB.
 
 </details>
 
