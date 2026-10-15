@@ -33,8 +33,11 @@ gateway window open and connect your PSP with a USB cable.
 <details>
 <summary><b>Windows</b></summary>
 
-[Download for Windows](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-windows-x86_64.exe),
-then double-click the downloaded `.exe`.
+Open Command Prompt (`cmd`) and paste this one line to download and start:
+
+```bat
+curl.exe -fL https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-windows-x86_64.exe -o pspkit-usbnetd.exe && pspkit-usbnetd.exe
+```
 
 If a USB driver is needed, the gateway offers to install it. Windows asks
 for permission; the gateway explains the local driver certificate first.
@@ -44,12 +47,10 @@ for permission; the gateway explains the local driver certificate first.
 <details>
 <summary><b>macOS — Apple Silicon & Intel</b></summary>
 
-[Download for macOS](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-macos).
-Open Terminal in the download folder and run:
+Open Terminal and paste this one line to download and start:
 
 ```sh
-chmod +x pspkit-usbnetd-macos
-./pspkit-usbnetd-macos
+curl -fL https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-macos -o pspkit-usbnetd && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
 ```
 
 The download is not Apple-notarized. If macOS blocks its first launch, see
@@ -60,16 +61,20 @@ The download is not Apple-notarized. If macOS blocks its first launch, see
 <details>
 <summary><b>Linux</b></summary>
 
-[Download for Intel / AMD (x86_64)](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64)
-or [ARM64](https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-aarch64).
-Open a terminal in the download folder and run:
+Open a terminal and paste the line for your processor to download and start.
+
+**Intel / AMD (x86_64)**
 
 ```sh
-chmod +x pspkit-usbnetd-linux-x86_64
-./pspkit-usbnetd-linux-x86_64
+curl -fL https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-x86_64 -o pspkit-usbnetd && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
 ```
 
-For ARM64, replace `x86_64` with `aarch64` in both commands.
+**ARM64 (aarch64)**
+
+```sh
+curl -fL https://github.com/chriopter/pspkit-usbnet/releases/latest/download/pspkit-usbnetd-linux-aarch64 -o pspkit-usbnetd && chmod +x pspkit-usbnetd && ./pspkit-usbnetd
+```
+
 If USB access needs permission, the gateway asks for your password through
 `sudo`.
 
