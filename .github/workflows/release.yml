@@ -54,6 +54,11 @@ jobs:
           chmod +x "$exe"
           "$exe" --version
           "$exe" --help
+          python3 tests/cli-startup.py "$exe"
+      - name: WinUSB installer success and failure cleanup on disposable runner
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/windows-driver.ps1 -IsolatedMachine
 
   gateway:
     strategy:
@@ -70,6 +75,7 @@ jobs:
         if: runner.os == 'Linux'
         run: pip install --break-system-packages ziglang==0.14.1 cargo-zigbuild==0.23.4
       - run: cargo test --locked --manifest-path gateway/Cargo.toml
+      - run: python3 tests/release-build.py
       - run: ./release.sh
       - name: usbnet.prx, in the pspdev container, and usbnet-psp.zip
         if: runner.os == 'Linux'

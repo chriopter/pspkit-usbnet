@@ -49,6 +49,9 @@ chmod +x pspkit-usbnetd-macos
 ./pspkit-usbnetd-macos
 ```
 
+The download is not Apple-notarized. If macOS blocks its first launch, see
+[Apple's instructions for opening downloaded apps](https://support.apple.com/en-us/102445).
+
 </details>
 
 <details>
@@ -151,13 +154,19 @@ else                            { /* not there (0), or why it could not look (< 
 <details>
 <summary><b>Tested</b></summary>
 
+The current 1.0 verification and outstanding checks are recorded in
+[`tests/release-1.0.md`](tests/release-1.0.md). Historical hardware results
+below do not replace testing the current binaries.
+
+- Gateway 1.0.0: 30 local tests; 17 unit and 10 protocol tests also executed in Windows 11, plus actual binary startup and installer success/failure cleanup in an isolated VM
+- Current Linux gateway beside the Street's XMB and PSPLink: 20 of 20 gateway probes, two concurrent callers each, responses in 20–21 ms; PSPLink remained available
 - PSP-1000 and PSP Go, 6.60 + ARK, Linux gateway
 - PSP Street (E1000), ARK + PSPLink, Linux gateway: saved USB profile, DHCP, 10 MiB download with matching checksum, five short TCP requests, twenty UDP echoes, DNS and an internet HTTP request (200 OK). The original game-side infrastructure chooser lists the profile and connects successfully (result 0, IP 10.77.0.2). Plugin installed, enabled and automatically loaded after a manual boot.
 - From the XMB: connection made from the scan, connection test, a DNS server set by hand
 - SOCOM: Fireteam Bravo 2 online (PSRewired): a round played
 - PSPDX: first start over the cable, catalog and installs (PSP-1000 and PSP Go)
-- Beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
-- Windows gateway: Windows 11 in a VM with the PSP-1000 passed through: the gateway installed the driver itself (PSP alone or beside PSPLink, either one first), 20 of 20 downloads intact at 4.6 MB/s, found again after a power cycle
+- Earlier releases beside PSPLink: 80 of 80 downloads intact, 210 of 210 connects
+- Windows gateway 0.1.10: Windows 11 in a VM with the PSP-1000 passed through: the gateway installed the driver itself (PSP alone or beside PSPLink, either one first), 20 of 20 downloads intact at 4.6 MB/s, found again after a power cycle
 - Untested: Windows on real hardware, Windows 10, macOS, two PSPs at once
 
 </details>

@@ -17,9 +17,21 @@ capture produced 26 complete 8888 frames spanning 2.920 seconds. XMB rendering
 and PSPLink remained available. Stop/unload only after the recording has
 finished and its final frame is complete.
 
+`encode.py frames.raw output.mp4` validates complete records and preserves
+the measured intervals when encoding. Requires Pillow, numpy and ffmpeg.
+It refuses partial or discontinuous captures; it never invents connection
+events or compresses waiting time.
+
 `input/` is a separate kernel bench helper based on the two user syscall
 replacements in `tests/play/pad.c`. It does not capture video. `pad.py` writes
 one bounded press; each press expires after at most one second. Its module
-refuses unload while syscall entries point into it. **Not approved or tested
-on this Street yet:** automatic approval rejected loading it under AGENTS.md;
-a specific user exception is pending. Never install it as part of USBNet.
+refuses unload while syscall entries point into it. The user explicitly
+approved the recording exception on 2026-10-15 after the initial automatic
+review rejection. Hardware input verification is still pending. Never
+install it as part of USBNet.
+
+The non-hooking firmware emulation alternative was also checked on this
+Street: `sceCtrl_driver` NID `0xDF53E160`, validated slot/argument stores,
+12 samples, user and kernel buttons, with an explicit clear in `finally`.
+Calls returned success but did not move the XMB. No controller hook was
+loaded. Do not treat this ineffective API as a tested recording input path.

@@ -35,11 +35,11 @@ fn ip_at(b: &[u8], at: usize) -> Ipv4Addr {
 pub fn checksum(parts: &[&[u8]]) -> u16 {
     let mut sum: u32 = 0;
     for p in parts {
-        let mut chunks = p.chunks_exact(2);
-        for c in &mut chunks {
+        let (chunks, remainder) = p.as_chunks::<2>();
+        for c in chunks {
             sum += u32::from(u16::from_be_bytes([c[0], c[1]]));
         }
-        if let [last] = chunks.remainder() {
+        if let [last] = remainder {
             sum += u32::from(*last) << 8;
         }
     }
@@ -218,6 +218,7 @@ pub fn build_icmp(
     f
 }
 
+#[allow(clippy::too_many_arguments)] // Explicit fields of an Ethernet/IP/ICMP echo packet.
 pub fn build_echo(
     dst_mac: &Mac,
     src_mac: &Mac,

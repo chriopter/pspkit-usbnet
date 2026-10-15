@@ -58,7 +58,7 @@ impl FrameDevice for MemDevice {
     fn send(&self, frame: &[u8]) -> io::Result<()> {
         let mut v = Vec::with_capacity(frame.len() + 1);
         v.extend_from_slice(frame);
-        if self.pad_multiple.is_some_and(|m| m > 0 && frame.len() % m == 0) {
+        if self.pad_multiple.is_some_and(|m| m > 0 && frame.len().is_multiple_of(m)) {
             v.push(0);
         }
         self.tx.send(v).map_err(|_| io::ErrorKind::BrokenPipe.into())

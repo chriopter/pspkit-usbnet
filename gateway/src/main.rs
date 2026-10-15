@@ -93,7 +93,7 @@ fn main() -> ExitCode {
             "--stats" => cfg.stats_interval = Some(Duration::from_secs(10)),
             "--ping" => ping = true,
             "-h" | "--help" => {
-                let help = HELP;
+                let help = std::borrow::Cow::Borrowed(HELP);
                 // Windows has no resolv.conf and no signals.
                 #[cfg(windows)]
                 let help = help

@@ -433,7 +433,10 @@ fn tcp_refused_is_a_reset() {
     let t0 = Instant::now();
     let h = psp.tcp_connect(Ipv4Addr::LOCALHOST, port);
     psp.until("the reset", 5, |psp| (psp.tcp(h).state() == tcp::State::Closed).then_some(()));
-    assert!(t0.elapsed() < Duration::from_secs(2), "refusal took {:?}", t0.elapsed());
+    // Windows reported WSAECONNREFUSED after 2.06 s on the isolated VM;
+    // the gateway must forward that refusal promptly once the OS reports it.
+    let limit = Duration::from_secs(if cfg!(windows) { 5 } else { 2 });
+    assert!(t0.elapsed() < limit, "refusal took {:?}", t0.elapsed());
     psp.unplug();
 }
 

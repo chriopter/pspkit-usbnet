@@ -191,6 +191,8 @@ $log = [IO.Path]::ChangeExtension($PSCommandPath, 'log')
 $subject = 'CN=pspkit-usbnet driver (made on this computer)'
 $dir = Join-Path ([IO.Path]::GetTempPath()) ('pspkit-usbnet-' + [Guid]::NewGuid().ToString('N'))
 $pnputil = Join-Path $env:SystemRoot 'System32\pnputil.exe'
+$cert = $null
+$installed = $false
 try {
     "$(Get-Date -Format o) start" | Set-Content $log
     New-Item -ItemType Directory $dir | Out-Null
@@ -261,9 +263,33 @@ Name     = "PSP network over USB (usbnet)"
     Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
     # 3010: installed, Windows would like a restart. 259: nothing more to do.
     if ($code -ne 0 -and $code -ne 3010 -and $code -ne 259) { exit $code }
+    $installed = $true
     exit 0
 } catch {
     "failed: $($_ | Out-String)" | Add-Content $log
     exit 1
+} finally {
+    # Even a catalog/signing failure must not leave a usable signing key.
+    if ($cert) {
+        $key = "Cert:\LocalMachine\My\$($cert.Thumbprint)"
+        if (Test-Path $key) { Remove-Item $key -DeleteKey -ErrorAction SilentlyContinue }
+        if (-not $installed) {
+            foreach ($s in 'Root', 'TrustedPublisher') {
+                Remove-Item "Cert:\LocalMachine\$s\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
 }
 "#;
+
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    #[ignore = "installs a driver/certificate; disposable Windows VM only"]
+    fn installer_on_disposable_windows() {
+        assert_eq!(std::env::var("PSPKIT_ISOLATED_DRIVER_TEST").as_deref(), Ok("1"),
+                   "never enable this test on a user's PC");
+        super::install_driver().expect("isolated Windows installer");
+    }
+}

@@ -58,6 +58,24 @@ struct Screen {
 /// The terminal's width, so that no line is longer: a wrapped line cannot be
 /// rewritten in place and would stay, once for every change.
 fn columns() -> usize {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        #[repr(C)]
+        struct Coord { x: i16, y: i16 }
+        #[repr(C)]
+        struct Rect { left: i16, top: i16, right: i16, bottom: i16 }
+        #[repr(C)]
+        struct Info { size: Coord, cursor: Coord, attributes: u16, window: Rect, maximum: Coord }
+        unsafe extern "system" {
+            fn GetStdHandle(which: u32) -> *mut c_void;
+            fn GetConsoleScreenBufferInfo(console: *mut c_void, info: *mut Info) -> i32;
+        }
+        let mut info: Info = unsafe { std::mem::zeroed() };
+        if unsafe { GetConsoleScreenBufferInfo(GetStdHandle(-11i32 as u32), &mut info) } != 0 {
+            return (i32::from(info.window.right) - i32::from(info.window.left)).max(1) as usize;
+        }
+    }
     #[cfg(unix)]
     {
         let mut size: libc::winsize = unsafe { std::mem::zeroed() };

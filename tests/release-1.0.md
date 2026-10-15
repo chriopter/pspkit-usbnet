@@ -12,10 +12,12 @@ of evidence, not a promise that software can never fail.
 | Street normal XMB entry and icon | User confirmed both after a regular firmware return |
 | Menu layout refusal/restoration | PC test passed; 1202 corruption cases; independent SHA-1 and byte comparison |
 | Linux x86_64 / ARM64 binaries | Static musl builds complete with locked dependencies |
-| Windows x86_64 binary | Cross-build complete; fresh VM smoke test pending |
+| Windows x86_64 binary | 1.0.0 runs in an isolated Windows 11 VM: help/version, usage errors, libusb startup, plain status and duplicate-instance checks passed |
+| Windows installer | Actual signature/catalog/pnputil run and forced catalog failure passed in the disposable VM without a PSP; prior trust retained, failed-attempt trust and private key removed. Does not establish Street USB binding |
+| Windows native protocol tests | 17 unit tests, all 10 protocol tests and the opt-in Rust installer test passed in Windows 11. Windows reports closed-loopback-port refusal after about 2.06 seconds; the test allows its OS latency |
 | macOS universal binary | Native CI build and Intel/Apple Silicon execution pending |
 | Actual release binaries on five native runners | Workflow prepared; execution pending |
-| Current 1.0 host beside PSPLink | Repeated hardware connections/transfers pending |
+| Current 1.0 host beside PSPLink | 20/20 gateway probes, two concurrent callers per round, 20–21 ms, PSPLink remained available. Repeated DHCP connections/transfers pending |
 | XMB and PSPDX recording | Safe userspace capture verified on XMB; full sequence pending controller-helper approval |
 
 The recording must show the real Street's original XMB network menu and its
