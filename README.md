@@ -90,6 +90,8 @@ The gateway shows **Connected · 10.77.0.2** once the PSP has its IP address.
 In PSPDX, a successful gateway search means the PC is reachable; select the
 saved **Hi-Speed USB** connection to go online.
 
+**Network settings won’t open in PSPDX or XMB?** A clean reinstall of official firmware 6.61 followed by ARK-5 fixed this on an affected PSP Street. Back up your data and follow the installation guide for your model.
+
 ## ⚙️ How it works
 
 The PSP believes it is on Wi-Fi. `usbnet.prx` sits where the WLAN driver would and sends every network packet through the USB cable; the gateway on the PC is its router. **PSPLink keeps a lane of its own in the same cable**, so you can debug and be online at once.
